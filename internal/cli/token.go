@@ -17,7 +17,8 @@ const tokenUsage = `Usage:
   track-record token list [--db <path>]
   track-record token revoke [--db <path>] <id>
 
-The token commands work on the database directly; there is no admin API.
+The token commands work directly on the database serve has created; there is
+no admin API.
 `
 
 func token(args []string, stdout, stderr io.Writer) int {
@@ -57,10 +58,9 @@ func tokenCreate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return exitCode(err)
 	}
-	st, err := store.Open(*db)
+	st, err := openDB(*db, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "track-record: %v\n", err)
-		return 1
+		return 2
 	}
 	defer st.Close()
 	secret, tok, err := st.CreateToken(context.Background(), *namespace, store.Scope(*scope), *label, time.Now())
@@ -80,10 +80,9 @@ func tokenList(args []string, stdout, stderr io.Writer) int {
 	if err := parse(fs, args, dbEnv); err != nil {
 		return exitCode(err)
 	}
-	st, err := store.Open(*db)
+	st, err := openDB(*db, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "track-record: %v\n", err)
-		return 1
+		return 2
 	}
 	defer st.Close()
 	tokens, err := st.Tokens(context.Background())
@@ -119,10 +118,9 @@ func tokenRevoke(args []string, stderr io.Writer) int {
 		usageErrorf(fs, "invalid token id %q", fs.Arg(0))
 		return 2
 	}
-	st, err := store.Open(*db)
+	st, err := openDB(*db, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "track-record: %v\n", err)
-		return 1
+		return 2
 	}
 	defer st.Close()
 	if err := st.RevokeToken(context.Background(), id, time.Now()); err != nil {
@@ -134,4 +132,14 @@ func tokenRevoke(args []string, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "track-record: token %d is revoked\n", id)
 	return 0
+}
+
+// openDB opens an existing database, so a mistyped --db is an error rather
+// than a new, empty database.
+func openDB(path string, stderr io.Writer) (*store.Store, error) {
+	st, err := store.OpenExisting(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "track-record token: %v; check --db or TRACK_RECORD_DB (track-record serve creates the database)\n", err)
+	}
+	return st, err
 }

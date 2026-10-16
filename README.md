@@ -52,8 +52,8 @@ docker exec track-record track-record token create --namespace myproject --scope
 It prints the token once, and nothing else on stdout. A `read` token looks
 passes up; a `write` token records them too. A token reaches only its own
 namespace. `token list` and `token revoke <id>` manage tokens; like `create`,
-they work on the database directly, so they run where it is. Revoking a token
-disowns every record it wrote.
+they work directly on the database `serve` has created, so they run where it
+is. Revoking a token disowns every record it wrote.
 
 ## Wrap a command
 

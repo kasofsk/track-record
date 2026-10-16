@@ -709,6 +709,16 @@ func TestTokenFile(t *testing.T) {
 		w.expect(w.probe(), 0, 1, "RECORDED")
 		w.expect(w.probe(), 0, 1, "REUSED")
 	})
+	t.Run("read with any white space trimmed", func(t *testing.T) {
+		w := newWorld(t)
+		w.env = append(w.env, "TRACK_RECORD_TOKEN=", "TRACK_RECORD_TOKEN_FILE="+write("spaced", " "+w.tokens["write"]+" \r\n\n", 0o600))
+		w.expect(w.probe(), 0, 1, "RECORDED")
+	})
+	t.Run("the variable with white space trimmed", func(t *testing.T) {
+		w := newWorld(t)
+		w.env = append(w.env, "TRACK_RECORD_TOKEN="+w.tokens["write"]+"\n")
+		w.expect(w.probe(), 0, 1, "RECORDED")
+	})
 	t.Run("the variable wins", func(t *testing.T) {
 		w := newWorld(t)
 		w.env = append(w.env, "TRACK_RECORD_TOKEN_FILE="+write("wrong", "trk_wrong\n", 0o600))
@@ -899,9 +909,52 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+func TestTokenCommandsNeedAnExistingDatabase(t *testing.T) {
+	w := newWorld(t)
+	dir := t.TempDir()
+	notDB := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(notDB, []byte("not a database\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(dir, "empty.db")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, path, want string }{
+		{"missing", filepath.Join(dir, "typo.db"), "no database at " + filepath.Join(dir, "typo.db")},
+		{"not SQLite", notDB, notDB + " is not a track-record database"},
+		{"empty", empty, empty + " is not a track-record database"},
+	} {
+		for _, args := range [][]string{
+			{"token", "create", "--db", c.path, "--namespace", "acme", "--scope", "write", "--label", "ci"},
+			{"token", "list", "--db", c.path},
+			{"token", "revoke", "--db", c.path, "1"},
+		} {
+			r := w.run(args...)
+			if r.code != 2 || r.stdout != "" || !strings.Contains(r.stderr, c.want) || strings.Count(r.stderr, "\n") != 1 {
+				t.Errorf("%s: %q: exit %d, stdout %q, stderr %q", c.name, args[1], r.code, r.stdout, r.stderr)
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "typo.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a database was created at the mistyped path: %v", err)
+	}
+	if b, _ := os.ReadFile(notDB); string(b) != "not a database\n" {
+		t.Errorf("the file that is not a database changed: %q", b)
+	}
+	if info, err := os.Stat(empty); err != nil || info.Size() != 0 {
+		t.Errorf("the empty file changed: %v", err)
+	}
+}
+
 func TestTokenCreateStdoutIsTheToken(t *testing.T) {
 	w := newWorld(t)
 	db := filepath.Join(t.TempDir(), "admin.db")
+	created, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.Close()
 	r := w.run("token", "create", "--db", db, "--namespace", "acme", "--scope", "write", "--label", "ci")
 	if r.code != 0 {
 		t.Fatalf("exit %d: %s", r.code, r.stderr)

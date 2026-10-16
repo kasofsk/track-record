@@ -10,6 +10,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"time"
 
 	"github.com/kasofsk/track-record/internal/api"
@@ -98,6 +100,32 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	return &Store{db: db}, nil
+}
+
+// OpenExisting opens the database at path, which must already be one Open
+// has created.
+func OpenExisting(path string) (*Store, error) {
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("no database at %s", path)
+	} else if err != nil {
+		return nil, err
+	}
+	// Checked over a plain connection first, so a file that is not one of
+	// these databases is read, never changed.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+	var tables int
+	err = db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('tokens', 'records', 'logs')`).Scan(&tables)
+	db.Close()
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("%s is not a track-record database: %w", path, err)
+	case tables != 3:
+		return nil, fmt.Errorf("%s is not a track-record database", path)
+	}
+	return Open(path)
 }
 
 // Close closes the database.

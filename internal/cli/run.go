@@ -76,12 +76,15 @@ func parseRunFlags(cmd string, args []string, stderr io.Writer) (*runFlags, erro
 			return nil, usageErrorf(fs, "invalid --env %q: give a variable's name", name)
 		}
 	}
+	// A token has no white space, so any around it is a stray newline or
+	// the like from wherever it was pasted or mounted.
+	f.token = strings.TrimSpace(f.token)
 	if path := os.Getenv("TRACK_RECORD_TOKEN_FILE"); f.token == "" && path != "" {
 		b, err := os.ReadFile(path)
 		if err != nil {
 			f.tokenErr = fmt.Errorf("cannot read TRACK_RECORD_TOKEN_FILE: %w", err)
 		}
-		f.token = strings.TrimSuffix(string(b), "\n")
+		f.token = strings.TrimSpace(string(b))
 	}
 	return f, nil
 }
