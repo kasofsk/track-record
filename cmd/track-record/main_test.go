@@ -530,9 +530,17 @@ func TestSignalPassthrough(t *testing.T) {
 			}
 			var stderr syncBuffer
 			cmd.Stderr = &stderr
+			// In a group of its own, so a signal that is not passed on can
+			// fail the test by killing track-record and its command together.
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
+			stuck := time.AfterFunc(10*time.Second, func() {
+				t.Errorf("still running 10s after %v; stderr: %s", tt.signal, stderr.String())
+				syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			})
+			defer stuck.Stop()
 			lines := bufio.NewReader(stdout)
 			if line, err := lines.ReadString('\n'); err != nil || line != "ready\n" {
 				t.Fatalf("read %q, %v; stderr: %s", line, err, stderr.String())

@@ -81,7 +81,10 @@ CREATE TABLE IF NOT EXISTS logs (
 
 // Open opens the database at path, creating it and its tables if need be.
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
+	// SQLite writes the database, its WAL and its shared-memory file beside
+	// path, and keeps its temporary tables and indices in memory, so nothing
+	// else on the filesystem need be writable.
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=temp_store(memory)")
 	if err != nil {
 		return nil, err
 	}

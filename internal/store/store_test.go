@@ -83,3 +83,16 @@ func TestCreateTokenRejects(t *testing.T) {
 		t.Errorf("a 128-character namespace: %v", err)
 	}
 }
+
+func TestWritesOnlyBesideTheDatabase(t *testing.T) {
+	s := open(t)
+	for pragma, want := range map[string]string{"journal_mode": "wal", "temp_store": "2", "foreign_keys": "1"} {
+		var got string
+		if err := s.db.QueryRow("PRAGMA " + pragma).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("%s = %s, want %s", pragma, got, want)
+		}
+	}
+}

@@ -31,8 +31,8 @@ docker build -t track-record .
 docker run -d --name track-record -p 8080:8080 --read-only --tmpfs /tmp -v track-record-data:/data track-record
 ```
 
-The image runs `/usr/local/bin/track-record serve` as uid 65532, with the
-database in the volume `/data`; it writes nowhere else but `/tmp`. Losing the
+The image runs `/usr/local/bin/track-record serve` as uid 65532 and writes only
+its database, in the volume `/data`, so its root can be read-only. Losing the
 database loses nothing but time.
 
 | Flag              | Environment                  | Default                                        |
