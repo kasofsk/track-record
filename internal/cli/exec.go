@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -59,6 +60,31 @@ func (i *interrupts) stop() bool {
 		}
 	}
 	return i.seen
+}
+
+// watch returns a context that is cancelled once a signal is caught, and a
+// function that ends the watch, which must be called before stop.
+func (i *interrupts) watch(parent context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	if i.seen {
+		cancel()
+		return ctx, cancel
+	}
+	done, watched := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(watched)
+		select {
+		case <-i.signals:
+			i.seen = true
+			cancel()
+		case <-done:
+		}
+	}()
+	return ctx, func() {
+		close(done)
+		<-watched
+		cancel()
+	}
 }
 
 // execute runs argv with the given streams, passing on each signal caught

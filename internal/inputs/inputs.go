@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/kasofsk/track-record/internal/key"
 )
@@ -219,6 +220,9 @@ func Tools(ctx context.Context, dir string, commands []string) ([]key.Tool, erro
 		cmd := exec.CommandContext(ctx, "sh", "-c", c)
 		cmd.Dir = dir
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		// The wait for output after the shell exits or is killed is
+		// bounded, since a process it leaves behind can hold it open.
+		cmd.WaitDelay = time.Second
 		if err := cmd.Run(); err != nil {
 			if msg := strings.TrimSpace(stderr.String()); msg != "" {
 				err = fmt.Errorf("%w: %s", err, msg)

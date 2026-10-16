@@ -161,10 +161,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if out.err != nil || out.code != 0 {
 		return out.exit(stderr)
 	}
-	// Signals are caught until the inputs have been read again: a signal
-	// sent to the whole group may reach the command first, and this gives
-	// track-record's copy time to arrive.
-	changed := changedSince(ctx, f, k)
+	// A signal sent to the whole group is pending for track-record before
+	// the command's exit can be reaped, though no thread may have handled
+	// it yet. Starting a process blocks signals and then unblocks them,
+	// which delivers a pending one at once; so the recheck, which starts
+	// git first, comes before stop, and stop sees the signal. A signal
+	// caught during the recheck ends it early: nothing is recorded after
+	// one.
+	recheck, unwatch := intr.watch(ctx)
+	changed := changedSince(recheck, f, k)
+	unwatch()
 	switch {
 	case intr.stop():
 		warnf(stderr, "%s exited 0 after an interrupt, so it is not recorded", f.name)

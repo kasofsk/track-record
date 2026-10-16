@@ -622,13 +622,78 @@ func TestGroupInterruptIsNeverRecorded(t *testing.T) {
 		t.Fatalf("key: %d %s", k.code, k.stderr)
 	}
 	for i := range 100 {
-		if code, stderr := w.signalled(syscall.SIGINT, true, script); code != 0 || strings.Contains(stderr, "RECORDED") {
+		code, stderr := w.signalled(syscall.SIGINT, true, script)
+		if code != 0 || !strings.Contains(stderr, "exited 0 after an interrupt") {
 			t.Fatalf("run %d: exit %d; stderr: %s", i, code, stderr)
 		}
 	}
 	key := strings.SplitN(k.stdout, "\n", 2)[0]
 	if _, err := w.store.Record(context.Background(), "acme", key, time.Now()); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("an interrupted run is on record: %v", err)
+	}
+}
+
+// A signal while the inputs are read again ends the reading, since the
+// outcome is already decided, rather than waiting out a slow tool.
+func TestSignalDuringTheRecheck(t *testing.T) {
+	tests := []struct {
+		name  string
+		sig   syscall.Signal
+		group bool
+		trap  string // set in the tool before it sleeps
+	}{
+		{"group interrupt", syscall.SIGINT, true, ""},
+		{"terminate track-record alone", syscall.SIGTERM, false, ""},
+		{"group interrupt the tool ignores", syscall.SIGINT, true, "trap '' INT TERM; "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			g := t.TempDir()
+			ran, rechecking := filepath.Join(g, "ran"), filepath.Join(g, "rechecking")
+			// The tool is slow only once the command has run.
+			tool := `if [ -f ` + ran + ` ]; then ` + tt.trap + `touch ` + rechecking + `; sleep 10; fi`
+			args := []string{"--name", "slow", "--tool", tool, "--", "touch", ran}
+			k := w.run(append([]string{"key"}, args...)...)
+			if k.code != 0 {
+				t.Fatalf("key: %d %s", k.code, k.stderr)
+			}
+			cmd := w.command(append([]string{"run"}, args...)...)
+			var stderr syncBuffer
+			cmd.Stderr = &stderr
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // and the tool's sleep, if it is left
+			for start := time.Now(); ; time.Sleep(10 * time.Millisecond) {
+				if _, err := os.Stat(rechecking); err == nil {
+					break
+				}
+				if time.Since(start) > 10*time.Second {
+					t.Fatalf("the recheck did not start; stderr: %s", stderr.String())
+				}
+			}
+			pid := cmd.Process.Pid
+			if tt.group {
+				pid = -pid
+			}
+			start := time.Now()
+			if err := syscall.Kill(pid, tt.sig); err != nil {
+				t.Fatal(err)
+			}
+			cmd.Wait()
+			if took := time.Since(start); took > 5*time.Second {
+				t.Errorf("track-record ended %v after the signal", took)
+			}
+			if code := cmd.ProcessState.ExitCode(); code != 0 || !strings.Contains(stderr.String(), "exited 0 after an interrupt") {
+				t.Errorf("exit %d; stderr: %s", code, stderr.String())
+			}
+			key := strings.SplitN(k.stdout, "\n", 2)[0]
+			if _, err := w.store.Record(context.Background(), "acme", key, time.Now()); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("an interrupted run is on record: %v", err)
+			}
+		})
 	}
 }
 
