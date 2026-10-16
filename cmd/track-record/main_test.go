@@ -1023,9 +1023,14 @@ func TestTokenMaskedInTheLog(t *testing.T) {
 	w.env = append(w.env, "HEAD="+token[:10], "TAIL="+token[10:])
 	tests := []struct {
 		name, script, log string
+		printsToken       bool
 	}{
-		{"environ", `tr '\0' '\n' < /proc/$PPID/environ | grep '^TRACK_RECORD_TOKEN='`, "TRACK_RECORD_TOKEN=[token]\n"},
-		{"split", `printf %s "$HEAD"; sleep 0.1; echo between >&2; sleep 0.1; echo "$TAIL"`, "between\n[token]\n"},
+		{"environ", `tr '\0' '\n' < /proc/$PPID/environ | grep '^TRACK_RECORD_TOKEN='`, "TRACK_RECORD_TOKEN=[token]\n", true},
+		{"split", `printf %s "$HEAD"; sleep 0.1; echo between >&2; sleep 0.1; echo "$TAIL"`, "between\n[token]\n", true},
+		// Output that ends partway into what could be a token is held back
+		// until the stream ends, and must still reach the log then.
+		{"tail on stdout", `printf 'abc trk_'`, "abc trk_", false},
+		{"tail on stderr", `printf 'abc t' >&2`, "abc t", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1034,7 +1039,7 @@ func TestTokenMaskedInTheLog(t *testing.T) {
 			if r.code != 0 || !strings.Contains(r.stderr, "RECORDED") {
 				t.Fatalf("exit %d; stderr: %s", r.code, r.stderr)
 			}
-			if !strings.Contains(r.stdout, token) {
+			if tt.printsToken && !strings.Contains(r.stdout, token) {
 				t.Errorf("the output passed on is not the command's: %q", r.stdout)
 			}
 			r = w.run(args...)

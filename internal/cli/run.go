@@ -170,7 +170,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// it yet. Starting a process blocks signals and then unblocks them,
 	// which delivers a pending one at once; so the recheck, which starts
 	// git first, comes before stop, and stop sees the signal. A signal
-	// caught during the recheck ends it early: nothing is recorded after
+	// caught during the recheck stops its git and tool commands, though
+	// not the hashing of files between them; nothing is recorded after
 	// one.
 	recheck, unwatch := intr.watch(ctx)
 	changed := changedSince(recheck, f, k)
