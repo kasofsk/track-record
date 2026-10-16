@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
+	"strings"
 	"syscall"
 )
 
@@ -60,10 +62,15 @@ func (i *interrupts) stop() bool {
 }
 
 // execute runs argv with the given streams, passing on each signal caught
-// while it runs.
+// while it runs. The command does not see the store's token, which would
+// otherwise reach a log that every token in the namespace can read.
 func (i *interrupts) execute(argv []string, stdin io.Reader, stdout, stderr io.Writer) outcome {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return name == "TRACK_RECORD_TOKEN" || name == "TRACK_RECORD_TOKEN_FILE"
+	})
 	if err := cmd.Start(); err != nil {
 		return outcome{err: err}
 	}

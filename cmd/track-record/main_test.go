@@ -805,6 +805,43 @@ func TestEnvValuesStayOutOfTheStore(t *testing.T) {
 	}
 }
 
+func TestTokenStaysOutOfTheCommand(t *testing.T) {
+	w := newWorld(t)
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte(w.tokens["write"]+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, env := range map[string][]string{
+		"from TRACK_RECORD_TOKEN":      nil,
+		"from TRACK_RECORD_TOKEN_FILE": {"TRACK_RECORD_TOKEN=", "TRACK_RECORD_TOKEN_FILE=" + tokenFile},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w.env = append(slices.Clone(env), "EXE="+exe)
+			script := `env; "$EXE" run --name nested -- true`
+			r := w.run("run", "--name", "env-"+strings.ReplaceAll(name, " ", "-"), "--", "sh", "-c", script)
+			w.env = nil
+			if r.code != 0 || !strings.Contains(r.stderr, "RECORDED") {
+				t.Fatalf("exit %d; stderr: %s", r.code, r.stderr)
+			}
+			for _, v := range []string{"TRACK_RECORD_TOKEN=", "TRACK_RECORD_TOKEN_FILE=", w.tokens["write"]} {
+				if strings.Contains(r.stdout, v) {
+					t.Errorf("the command saw %q:\n%s", v, r.stdout)
+				}
+			}
+			if !strings.Contains(r.stdout, "TRACK_RECORD_URL=") {
+				t.Errorf("the command lost the rest of its environment:\n%s", r.stdout)
+			}
+			if !strings.Contains(r.stderr, "no store configured") {
+				t.Errorf("track-record inside the command did not run plainly: %s", r.stderr)
+			}
+		})
+	}
+}
+
 func TestKeyCommand(t *testing.T) {
 	w := newWorld(t)
 	r := w.run("key", "--name", "probe", "--platform", "--salt", "x", "--env", "HOME", "--tool", "true", "--", "true")

@@ -67,7 +67,8 @@ track-record run --name test -- go test ./...
 The first run runs the command and records its pass. The next prints the
 recorded log and `track-record: REUSED test (recorded <time> by ci)` instead,
 until something in the key changes. The token can also come from the file
-`TRACK_RECORD_TOKEN_FILE` names.
+`TRACK_RECORD_TOKEN_FILE` names. The command sees neither variable, so its log
+cannot carry the token, and a `track-record` inside it runs plainly.
 
 The key covers the namespace, `--name`, the command line, the working directory
 within the checkout, and every tracked file, or those `--inputs <pathspec>`
