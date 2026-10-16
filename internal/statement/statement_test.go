@@ -15,7 +15,7 @@ func inputs() key.Inputs {
 		Dir:       ".",
 		Argv:      []string{"go", "test", "./..."},
 		Files:     []key.File{{Path: "go.mod", Kind: key.Regular, SHA256: key.Digest([]byte("module x\n"))}},
-		Tools:     []key.Tool{{Command: "go version", Output: "go1.24\n"}},
+		Tools:     []key.Tool{{Command: "go version", Stdout: "go1.24\n", Stderr: "warning: go2\n"}},
 		Env:       []key.Var{{Name: "SECRET", Value: "hunter2", Set: true}, {Name: "UNSET"}},
 	}
 }
@@ -42,7 +42,7 @@ func TestNewParses(t *testing.T) {
 			t.Errorf("descriptor %d = %+v, want section %q's digest", i, rd, sections[i].Label)
 		}
 	}
-	for _, leak := range []string{"hunter2", "go1.24", "go.mod"} {
+	for _, leak := range []string{"hunter2", "go1.24", "go2", "go.mod"} {
 		if strings.Contains(string(raw), leak) {
 			t.Errorf("statement contains %q: %s", leak, raw)
 		}

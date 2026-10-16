@@ -104,8 +104,16 @@ func TestEveryInputKindChangesTheKey(t *testing.T) {
 		{"tool", nil, func(t *testing.T, dir *string, o *Options, e env) {
 			o.Tools = []string{"echo one"}
 		}},
-		{"tool output", func(o *Options) { o.Tools = []string{"cat README.md"} }, func(t *testing.T, dir *string, o *Options, e env) {
+		// The tools read README.md, which these inputs leave out, so only
+		// the tool's output can change the key.
+		{"tool output", toolReading("cat README.md"), func(t *testing.T, dir *string, o *Options, e env) {
 			gittest.Write(t, *dir, "README.md", "hello!\n")
+		}},
+		{"tool output on stderr", toolReading("cat README.md >&2"), func(t *testing.T, dir *string, o *Options, e env) {
+			gittest.Write(t, *dir, "README.md", "hello!\n")
+		}},
+		{"tool output moved to stderr", toolReading("cat README.md"), func(t *testing.T, dir *string, o *Options, e env) {
+			o.Tools = []string{"cat README.md >&2"}
 		}},
 		{"env value", nil, func(t *testing.T, dir *string, o *Options, e env) {
 			e["MODE"] = "fast"
@@ -152,6 +160,15 @@ func TestEveryInputKindChangesTheKey(t *testing.T) {
 				t.Errorf("the key did not change")
 			}
 		})
+	}
+}
+
+// toolReading returns options whose only input path is src and whose one
+// tool is command.
+func toolReading(command string) func(o *Options) {
+	return func(o *Options) {
+		o.Pathspecs = []string{"src"}
+		o.Tools = []string{command}
 	}
 }
 

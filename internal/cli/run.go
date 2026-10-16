@@ -43,7 +43,7 @@ func parseRunFlags(cmd string, args []string, stderr io.Writer) (*runFlags, erro
 	fs.StringVar(&f.server, "server", "", "the store's URL ($TRACK_RECORD_URL)")
 	fs.StringVar(&f.token, "token", "", "a token for the namespace ($TRACK_RECORD_TOKEN, or the file $TRACK_RECORD_TOKEN_FILE names)")
 	fs.Var(&f.inputs, "inputs", "a git `pathspec` of the command's input paths; repeatable (default the whole tracked tree)")
-	fs.Var(&f.tools, "tool", "a shell `command` whose output goes into the key, such as 'node --version'; repeatable")
+	fs.Var(&f.tools, "tool", "a shell `command` whose standard output and standard error go into the key, such as 'java -version'; repeatable")
 	fs.Var(&f.env, "env", "the `name` of a variable whose value goes into the key; repeatable")
 	fs.BoolVar(&f.platform, "platform", false, "put this OS and architecture into the key")
 	fs.StringVar(&f.salt, "salt", "", "a salt for the key; changing it disowns every earlier record ($TRACK_RECORD_SALT)")

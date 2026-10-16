@@ -23,7 +23,7 @@ func fixture() Inputs {
 			{Path: "link", Kind: Symlink, SHA256: Digest([]byte("README.md"))},
 		},
 		Untracked: []File{{Path: "scratch.txt", Kind: Regular, SHA256: Digest(nil)}},
-		Tools:     []Tool{{Command: "go version", Output: "go version go1.24.4 linux/amd64\n"}},
+		Tools:     []Tool{{Command: "java -version", Stdout: "", Stderr: "openjdk version \"21.0.4\"\n"}},
 		Env: []Var{
 			{Name: "CI", Value: "true", Set: true},
 			{Name: "EMPTY", Set: true},
@@ -34,7 +34,7 @@ func fixture() Inputs {
 	}
 }
 
-const fixtureKey = "8e9798b171faab95fb964a524897a58183c6ad410e4b4951e00ea25234cb056e"
+const fixtureKey = "cd55bdc8c2953af9f2991f65cc81de62f348b05f7d141e17af456eae1ae062d8"
 
 func TestGoldenPreimage(t *testing.T) {
 	golden := filepath.Join("testdata", "preimage.golden")
@@ -76,8 +76,10 @@ func TestEveryInputChangesTheKey(t *testing.T) {
 			in.Files, in.Untracked = in.Files[:3], append(in.Untracked, in.Files[3])
 		}},
 		{"untracked", func(in *Inputs) { in.Untracked = nil }},
-		{"tool output", func(in *Inputs) { in.Tools[0].Output = "go version go1.25.0 linux/amd64\n" }},
-		{"tool command", func(in *Inputs) { in.Tools[0].Command = "go env GOVERSION" }},
+		{"tool stderr", func(in *Inputs) { in.Tools[0].Stderr = "openjdk version \"25\"\n" }},
+		{"tool stdout", func(in *Inputs) { in.Tools[0].Stdout = "x" }},
+		{"tool output moves to stdout", func(in *Inputs) { in.Tools[0].Stdout, in.Tools[0].Stderr = in.Tools[0].Stderr, "" }},
+		{"tool command", func(in *Inputs) { in.Tools[0].Command = "java --version" }},
 		{"tool added", func(in *Inputs) { in.Tools = append(in.Tools, Tool{Command: "true"}) }},
 		{"env value", func(in *Inputs) { in.Env[0].Value = "false" }},
 		{"empty becomes unset", func(in *Inputs) { in.Env[1].Set = false }},
@@ -105,7 +107,7 @@ func TestEveryInputChangesTheKey(t *testing.T) {
 
 func TestFlagOrderDoesNotChangeTheKey(t *testing.T) {
 	in := fixture()
-	in.Tools = append(in.Tools, Tool{Command: "a", Output: "1"})
+	in.Tools = append(in.Tools, Tool{Command: "a", Stdout: "1"})
 	in.Env = append(in.Env, Var{Name: "A", Value: "x", Set: true})
 	reordered := in
 	reordered.Tools = []Tool{in.Tools[1], in.Tools[0], in.Tools[1]}

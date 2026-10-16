@@ -36,10 +36,12 @@ type File struct {
 	SHA256 string // hex digest of the content, or of a symlink's target; empty when deleted
 }
 
-// Tool is a command whose standard output is part of the key.
+// Tool is a command whose standard output and standard error are part of
+// the key, each on its own.
 type Tool struct {
 	Command string
-	Output  string
+	Stdout  string
+	Stderr  string
 }
 
 // Var is an environment variable. An unset variable differs from an empty one.
@@ -100,7 +102,8 @@ func (in Inputs) Sections() []Section {
 			e.count(len(in.Tools))
 			for _, t := range in.Tools {
 				e.field(t.Command)
-				e.field(t.Output)
+				e.field(t.Stdout)
+				e.field(t.Stderr)
 			}
 		}),
 		section("env", func(e *encoder) {

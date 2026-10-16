@@ -92,7 +92,11 @@ func describe(in key.Inputs, label string) map[string]any {
 	case "tools":
 		tools := make([]map[string]any, 0, len(in.Tools))
 		for _, t := range in.Tools {
-			tools = append(tools, map[string]any{"command": t.Command, "sha256": key.Digest([]byte(t.Output))})
+			tools = append(tools, map[string]any{
+				"command": t.Command,
+				"stdout":  map[string]string{"sha256": key.Digest([]byte(t.Stdout))},
+				"stderr":  map[string]string{"sha256": key.Digest([]byte(t.Stderr))},
+			})
 		}
 		return map[string]any{"tools": tools}
 	case "env":

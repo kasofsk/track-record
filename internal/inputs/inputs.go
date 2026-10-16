@@ -210,17 +210,22 @@ func hashContent(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// Tools runs each command with sh -c in dir and returns its standard output.
+// Tools runs each command with sh -c in dir and returns its standard output
+// and standard error.
 func Tools(ctx context.Context, dir string, commands []string) ([]key.Tool, error) {
 	tools := make([]key.Tool, 0, len(commands))
 	for _, c := range commands {
+		var stdout, stderr bytes.Buffer
 		cmd := exec.CommandContext(ctx, "sh", "-c", c)
 		cmd.Dir = dir
-		out, err := cmd.Output()
-		if err != nil {
-			return nil, fmt.Errorf("tool %q: %w", c, withStderr(err))
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		if err := cmd.Run(); err != nil {
+			if msg := strings.TrimSpace(stderr.String()); msg != "" {
+				err = fmt.Errorf("%w: %s", err, msg)
+			}
+			return nil, fmt.Errorf("tool %q: %w", c, err)
 		}
-		tools = append(tools, key.Tool{Command: c, Output: string(out)})
+		tools = append(tools, key.Tool{Command: c, Stdout: stdout.String(), Stderr: stderr.String()})
 	}
 	return tools, nil
 }

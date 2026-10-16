@@ -73,8 +73,9 @@ cannot carry the token, and a `track-record` inside it runs plainly.
 The key covers the namespace, `--name`, the command line, the working directory
 within the checkout, and every tracked file, or those `--inputs <pathspec>`
 matches, as it is on disk: its content, type and executable bit. `--tool
-'<command>'` adds a command's output, `--env <name>` a variable's value,
-`--platform` the OS and architecture, and `--salt` a salt.
+'<command>'` adds a command's standard output and standard error, such as
+`--tool 'java -version'`; `--env <name>` adds a variable's value, `--platform`
+the OS and architecture, and `--salt` a salt.
 
 Untracked files within the inputs mean no lookup and no record, since the
 command may read files that will not be committed; `--allow-untracked` puts them

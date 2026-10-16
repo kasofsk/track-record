@@ -31,8 +31,9 @@
 64:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 5:tools
 1:1
-10:go version
-32:go version go1.24.4 linux/amd64
+13:java -version
+0:
+25:openjdk version "21.0.4"
 
 3:env
 1:3
