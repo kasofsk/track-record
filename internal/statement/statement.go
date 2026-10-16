@@ -49,8 +49,9 @@ type TestResult struct {
 
 // New returns the statement that the command in describes passed. Its
 // configuration has one descriptor per section of the key's preimage: the
-// section's digest, and a description that holds the command line, counts and
-// names but never file contents, tool output or variable values.
+// section's digest, and a description of it. A description holds the command
+// line, counts, names and digests, never a file's contents, a tool's output or
+// a variable's value: a value may be a secret.
 func New(in key.Inputs) Statement {
 	in = in.Canonical()
 	sections := in.Sections()
@@ -89,17 +90,21 @@ func describe(in key.Inputs, label string) map[string]any {
 	case "untracked":
 		return map[string]any{"count": len(in.Untracked)}
 	case "tools":
-		commands := make([]string, 0, len(in.Tools))
+		tools := make([]map[string]any, 0, len(in.Tools))
 		for _, t := range in.Tools {
-			commands = append(commands, t.Command)
+			tools = append(tools, map[string]any{"command": t.Command, "sha256": key.Digest([]byte(t.Output))})
 		}
-		return map[string]any{"commands": commands}
+		return map[string]any{"tools": tools}
 	case "env":
-		names := make([]string, 0, len(in.Env))
+		vars := make([]map[string]any, 0, len(in.Env))
 		for _, v := range in.Env {
-			names = append(names, v.Name)
+			if v.Set {
+				vars = append(vars, map[string]any{"name": v.Name, "sha256": key.Digest([]byte(v.Value))})
+			} else {
+				vars = append(vars, map[string]any{"name": v.Name, "unset": true})
+			}
 		}
-		return map[string]any{"names": names}
+		return map[string]any{"vars": vars}
 	case "platform":
 		if in.Platform != "" {
 			return map[string]any{"platform": in.Platform}

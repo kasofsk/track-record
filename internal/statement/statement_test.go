@@ -16,7 +16,7 @@ func inputs() key.Inputs {
 		Argv:      []string{"go", "test", "./..."},
 		Files:     []key.File{{Path: "go.mod", Kind: key.Regular, SHA256: key.Digest([]byte("module x\n"))}},
 		Tools:     []key.Tool{{Command: "go version", Output: "go1.24\n"}},
-		Env:       []key.Var{{Name: "SECRET", Value: "hunter2", Set: true}},
+		Env:       []key.Var{{Name: "SECRET", Value: "hunter2", Set: true}, {Name: "UNSET"}},
 	}
 }
 
@@ -46,6 +46,11 @@ func TestNewParses(t *testing.T) {
 		if strings.Contains(string(raw), leak) {
 			t.Errorf("statement contains %q: %s", leak, raw)
 		}
+	}
+	env := s.Predicate.Configuration[len(sections)-3]
+	want := `{"vars":[{"name":"SECRET","sha256":"` + key.Digest([]byte("hunter2")) + `"},{"name":"UNSET","unset":true}]}`
+	if got, _ := json.Marshal(env.Annotations); env.Name != "env" || string(got) != want {
+		t.Errorf("env descriptor %s annotations = %s, want %s", env.Name, got, want)
 	}
 }
 
