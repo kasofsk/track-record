@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -233,6 +234,58 @@ func TestFirstWriterWins(t *testing.T) {
 		if r.Writer.Label != "writeA" || !r.RecordedAt.Equal(t0) || strings.Contains(string(r.Statement), "second") {
 			t.Errorf("record changed: %+v", r)
 		}
+	}
+}
+
+func TestRevokedWritersRecordsStopCounting(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	data := []byte("passed\n")
+	f.expect("PUT", "/v1/logs/a/"+digest(data), "writeA", data, http.StatusCreated)
+	k, put := pass(t, "unit", &api.Log{Digest: digest(data), Size: int64(len(data))}, "true")
+	f.expect("PUT", "/v1/records/a/"+k, "writeA", put, http.StatusCreated)
+	f.expect("GET", "/v1/records/a/"+k, "readA", nil, http.StatusOK)
+
+	tokens, err := f.store.Tokens(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tok := range tokens {
+		if tok.Label == "writeA" {
+			if err := f.store.RevokeToken(ctx, tok.ID, f.now); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	f.expect("GET", "/v1/records/a/"+k, "readA", nil, http.StatusNotFound)
+
+	// Another writer can record the key again at once.
+	f.now = t0.Add(time.Minute)
+	rec := decodeRecord(t, f.expect("PUT", "/v1/records/a/"+k, "writeA2", put, http.StatusCreated))
+	if rec.Writer.Label != "writeA2" {
+		t.Errorf("writer = %+v, want writeA2", rec.Writer)
+	}
+	f.expect("GET", "/v1/records/a/"+k, "readA", nil, http.StatusOK)
+
+	// A sweep deletes a revoked writer's records, and with them the hold
+	// on their logs.
+	other := []byte("other\n")
+	f.expect("PUT", "/v1/logs/a/"+digest(other), "writeA2", other, http.StatusCreated)
+	k2, put2 := pass(t, "lint", &api.Log{Digest: digest(other), Size: int64(len(other))}, "true")
+	f.expect("PUT", "/v1/records/a/"+k2, "writeA2", put2, http.StatusCreated)
+	for _, tok := range tokens {
+		if tok.Label == "writeA2" {
+			if err := f.store.RevokeToken(ctx, tok.ID, f.now); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	f.now = f.now.Add(LogGrace + time.Minute)
+	if err := f.server.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Log(ctx, "a", digest(other)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the log of a revoked writer's record survived the sweep: %v", err)
 	}
 }
 

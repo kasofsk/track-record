@@ -174,10 +174,16 @@ func (s *Store) Authenticate(ctx context.Context, secret string) (Token, error) 
 	return t, err
 }
 
+// live is the condition for a record to count at the time given as its
+// parameter: it has not expired, and the token that wrote it has not been
+// revoked.
+const live = `records.expires_at > ? AND EXISTS (
+	SELECT 1 FROM tokens WHERE tokens.id = records.writer_id AND tokens.revoked_at IS NULL)`
+
 // Record returns the live record for key in namespace.
 func (s *Store) Record(ctx context.Context, namespace, key string, now time.Time) (api.Record, error) {
 	r, err := scanRecord(s.db.QueryRowContext(ctx,
-		`SELECT `+recordColumns+` FROM records WHERE namespace = ? AND key = ? AND expires_at > ?`,
+		`SELECT `+recordColumns+` FROM records WHERE namespace = ? AND key = ? AND `+live,
 		namespace, key, now.Unix()))
 	if errors.Is(err, sql.ErrNoRows) {
 		return api.Record{}, ErrNotFound
@@ -221,8 +227,8 @@ func (s *Store) PutRecord(ctx context.Context, namespace, key, name string, stat
 			expires_at = excluded.expires_at,
 			log_digest = excluded.log_digest,
 			log_size = excluded.log_size
-		WHERE records.expires_at <= excluded.recorded_at`,
-		namespace, key, name, string(statement), writer.ID, writer.Label, now.Unix(), now.Add(ttl).Unix(), digest, size)
+		WHERE NOT (`+live+`)`,
+		namespace, key, name, string(statement), writer.ID, writer.Label, now.Unix(), now.Add(ttl).Unix(), digest, size, now.Unix())
 	if err != nil {
 		return api.Record{}, false, err
 	}
@@ -260,16 +266,16 @@ func (s *Store) Log(ctx context.Context, namespace, digest string) ([]byte, erro
 	return data, err
 }
 
-// Sweep deletes expired records, then the logs that no live record refers to
-// and that are older than grace. The grace covers a log uploaded just before
-// the record that will refer to it.
+// Sweep deletes the records that are no longer live, then the logs that no
+// record refers to and that are older than grace. The grace covers a log
+// uploaded just before the record that will refer to it.
 func (s *Store) Sweep(ctx context.Context, now time.Time, grace time.Duration) (records, logs int64, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `DELETE FROM records WHERE expires_at <= ?`, now.Unix())
+	res, err := tx.ExecContext(ctx, `DELETE FROM records WHERE NOT (`+live+`)`, now.Unix())
 	if err != nil {
 		return 0, 0, err
 	}
@@ -278,8 +284,8 @@ func (s *Store) Sweep(ctx context.Context, now time.Time, grace time.Duration) (
 	}
 	res, err = tx.ExecContext(ctx, `
 		DELETE FROM logs WHERE created_at <= ? AND NOT EXISTS (
-			SELECT 1 FROM records r WHERE r.namespace = logs.namespace AND r.log_digest = logs.digest AND r.expires_at > ?
-		)`, now.Add(-grace).Unix(), now.Unix())
+			SELECT 1 FROM records r WHERE r.namespace = logs.namespace AND r.log_digest = logs.digest
+		)`, now.Add(-grace).Unix())
 	if err != nil {
 		return 0, 0, err
 	}

@@ -766,6 +766,28 @@ func TestAuthRefusals(t *testing.T) {
 	}
 }
 
+func TestRevokedWritersRecordIsAMiss(t *testing.T) {
+	w := newWorld(t)
+	w.expect(w.probe(), 0, 1, "RECORDED probe")
+	tokens, err := w.store.Tokens(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tok := range tokens {
+		if tok.Label == "ci-write" {
+			if err := w.store.RevokeToken(context.Background(), tok.ID, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	w.env = append(w.env, "TRACK_RECORD_TOKEN="+w.tokens["read"])
+	r := w.probe()
+	w.expect(r, 0, 2)
+	if strings.Contains(r.stderr, "REUSED") {
+		t.Errorf("a revoked writer's record was reused: %s", r.stderr)
+	}
+}
+
 func TestEnvValuesStayOutOfTheStore(t *testing.T) {
 	w := newWorld(t)
 	const secret = "s3cr3t-hunter2"
