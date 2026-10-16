@@ -14,6 +14,12 @@ the project or the CI it runs in.
   the inputs or no store configured: the command runs, and nothing of the kind
   is ever a pass.
 
+The exception is Track Record's own errors, which exit 2 without running the
+command: a bad flag, or a bad value in a variable that stands for one; and,
+with a store configured, no namespace, a server URL that is not one, no git, a
+working directory outside a git checkout, or an `--inputs` pathspec that
+matches no tracked file. A command that cannot be started exits 2 too.
+
 ## Install
 
 ```sh
@@ -33,7 +39,8 @@ docker run -d --name track-record -p 8080:8080 --read-only --tmpfs /tmp -v track
 
 The image runs `/usr/local/bin/track-record serve` as uid 65532 and writes only
 its database, in the volume `/data`, so its root can be read-only. Losing the
-database loses nothing but time.
+database loses the tokens along with the records: every token must be minted
+again, and every pass earned again.
 
 | Flag              | Environment                  | Default                                        |
 | ----------------- | ---------------------------- | ---------------------------------------------- |
@@ -80,8 +87,14 @@ the OS and architecture, and `--salt` a salt.
 
 Untracked files within the inputs mean no lookup and no record, since the
 command may read files that will not be committed; `--allow-untracked` puts them
-into the key instead. `--fresh` skips the lookup and still records a pass.
-`--timeout` caps each store request, 5s by default.
+into the key instead. A pass is recorded only if the inputs, read again when the
+command exits, still give the key it ran under. `--fresh` skips the lookup and
+still records a pass. `--timeout` caps each store request, 5s by default.
+
+Files git ignores, through `.gitignore`, `.git/info/exclude` or
+`core.excludesFile`, are neither in the key nor guarded. A command that reads
+one must name it some other way, such as `--tool 'cat local.cfg'`, or not be
+wrapped.
 
 `track-record key [flags] -- <command>` prints the key and a summary of what it
 covers.
