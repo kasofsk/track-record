@@ -155,21 +155,39 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	intr := catchInterrupts()
 	defer intr.stop()
 	out := intr.execute(f.argv, stdin, io.MultiWriter(stdout, capture), io.MultiWriter(stderr, capture))
-	switch {
-	case out.err != nil || out.code != 0:
+	if out.err != nil || out.code != 0 {
 		return out.exit(stderr)
+	}
+	changed := changedSince(ctx, f, k)
+	switch {
 	case intr.stop():
 		warnf(stderr, "%s exited 0 after an interrupt, so it is not recorded", f.name)
-		return 0
 	case out.ioErr != nil:
 		warnf(stderr, "%s passed but its output was not passed on in full, so it is not recorded: %v", f.name, out.ioErr)
-		return 0
 	case capture.err != nil:
 		warnf(stderr, "%s passed but its log could not be kept, so it is not recorded: %v", f.name, capture.err)
-		return 0
+	case changed != "":
+		warnf(stderr, "%s passed but is not recorded: %s", f.name, changed)
+	default:
+		record(ctx, cl, f, in, logFile, capture, stderr)
 	}
-	record(ctx, cl, f, in, logFile, capture, stderr)
 	return 0
+}
+
+// changedSince reads the inputs again and says how they no longer give the
+// key k, or returns "" if they still do. After an edit or a new file during
+// the run, the command may have passed on a tree k does not describe.
+func changedSince(ctx context.Context, f *runFlags, k string) string {
+	res, err := collect(ctx, f)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("its inputs could not be read again: %v", err)
+	case len(res.Untracked) > 0:
+		return fmt.Sprintf("untracked files appeared within the inputs while it ran, such as %s", res.Untracked[0])
+	case res.Inputs.Key() != k:
+		return "its inputs changed while it ran"
+	}
+	return ""
 }
 
 // collect reads the key's inputs from the working directory.

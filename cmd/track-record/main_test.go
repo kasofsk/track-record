@@ -494,6 +494,76 @@ func TestUntrackedGuard(t *testing.T) {
 	w.expect(w.probe(), 0, 6, "REUSED")
 }
 
+func TestInputsChangedDuringTheRun(t *testing.T) {
+	tests := []struct {
+		name     string
+		flags    []string
+		edit     string // what happens to the tree while the command runs
+		recorded bool
+		stderr   string
+	}{
+		{"tracked file edited", nil, `echo good > value.txt`, false, "check passed but is not recorded: its inputs changed while it ran"},
+		{"tracked file deleted", nil, `rm value.txt`, false, "its inputs changed while it ran"},
+		{"untracked file added", nil, `touch new.txt`, false, "untracked files appeared within the inputs while it ran, such as new.txt"},
+		{"untracked file allowed", []string{"--allow-untracked"}, `touch new.txt`, false, "its inputs changed while it ran"},
+		{"file outside the inputs", []string{"--inputs", "src"}, `echo good > value.txt`, true, "RECORDED check"},
+		{"ignored file written", nil, `mkdir -p out && echo x > out/a`, true, "RECORDED check"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			gittest.Write(t, w.repo, "value.txt", "bad\n")
+			gittest.Write(t, w.repo, ".gitignore", "out/\n")
+			gittest.Commit(t, w.repo)
+			args := append(append([]string{"run", "--name", "check"}, tt.flags...), "--", "sh", "-c", tt.edit)
+			r := w.run(args...)
+			if r.code != 0 || !strings.Contains(r.stderr, tt.stderr) {
+				t.Fatalf("exit %d, stderr %q; want 0 and %q", r.code, r.stderr, tt.stderr)
+			}
+			if got := strings.Contains(r.stderr, "RECORDED"); got != tt.recorded {
+				t.Errorf("recorded = %v, want %v: %s", got, tt.recorded, r.stderr)
+			}
+			if lines := strings.Count(r.stderr, "\n"); lines != 1 {
+				t.Errorf("%d lines on stderr, want 1: %s", lines, r.stderr)
+			}
+		})
+	}
+}
+
+// An edit saved while a check runs, then undone, must not leave the
+// undone tree passing on the strength of the edit.
+func TestEditDuringTheRunThenUndone(t *testing.T) {
+	w := newWorld(t)
+	gittest.Write(t, w.repo, "value.txt", "bad\n")
+	gittest.Commit(t, w.repo)
+	gate := filepath.Join(t.TempDir(), "go")
+	w.env = append(w.env, "GATE="+gate)
+	script := `echo ready; while [ ! -f "$GATE" ]; do sleep 0.01; done; grep -qx good value.txt`
+	cmd := w.command("run", "--name", "check", "--", "sh", "-c", script)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr syncBuffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "ready\n" {
+		t.Fatalf("read %q, %v; stderr: %s", line, err, stderr.String())
+	}
+	gittest.Write(t, w.repo, "value.txt", "good\n")
+	gittest.Write(t, filepath.Dir(gate), "go", "")
+	cmd.Wait()
+	if code := cmd.ProcessState.ExitCode(); code != 0 || strings.Contains(stderr.String(), "RECORDED") {
+		t.Fatalf("exit %d; stderr: %s", code, stderr.String())
+	}
+	gittest.Git(t, w.repo, "checkout", "--", "value.txt")
+	if r := w.run("run", "--name", "check", "--", "sh", "-c", script); r.code != 1 {
+		t.Errorf("the undone tree: exit %d, want 1; stderr: %s", r.code, r.stderr)
+	}
+}
+
 func TestFresh(t *testing.T) {
 	w := newWorld(t)
 	w.expect(w.probe(), 0, 1, "RECORDED")
