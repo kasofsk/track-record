@@ -17,11 +17,12 @@ the project or the CI it runs in.
 ## Install
 
 ```sh
-go install github.com/kasofsk/track-record/cmd/track-record@latest
+CGO_ENABLED=0 go install -trimpath github.com/kasofsk/track-record/cmd/track-record@latest
 ```
 
-The binary is static: `CGO_ENABLED=0 go build -trimpath ./cmd/track-record`
-builds the same from a clone.
+The main package is `cmd/track-record`; it needs no cgo, so the binary is
+static. From a clone, `CGO_ENABLED=0 go build -trimpath ./cmd/track-record`
+builds the same.
 
 ## Run the server
 
