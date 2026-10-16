@@ -96,13 +96,18 @@ store is configured, the variable is unset.
 Untracked files within the inputs mean no lookup and no record, since the
 command may read files that will not be committed; `--allow-untracked` puts them
 into the key instead. A pass is recorded only if the inputs, read again when the
-command exits, still give the key it ran under. `--fresh` skips the lookup and
-still records a pass. `--timeout` caps each store request, 5s by default.
+command exits, still give the key it ran under, so an untracked file the command
+writes within them blocks its record: a build's outputs must be ignored. An edit
+made and undone before the command exits is not seen. `--fresh` skips the lookup
+and still records a pass. `--timeout` caps each store request, 5s by default.
 
-Files git ignores, through `.gitignore`, `.git/info/exclude` or
-`core.excludesFile`, are neither in the key nor guarded. A command that reads
-one must name it some other way, such as `--tool 'cat local.cfg'`, or not be
-wrapped.
+The key reads the tracked files in the working tree and nothing else: not the
+files git ignores, through `.gitignore`, `.git/info/exclude` or
+`core.excludesFile`; not the index, where staged content is; and not HEAD or any
+other ref. A command that reads one must name it with `--tool`, or not be
+wrapped: `--tool 'cat local.cfg'` for an ignored file, `--tool 'git write-tree'`
+for a command that checks the index, such as a pre-commit hook, and `--tool 'git
+rev-parse origin/main'` for one that compares against a ref.
 
 `track-record key [flags] -- <command>` prints the key and a summary of what it
 covers.

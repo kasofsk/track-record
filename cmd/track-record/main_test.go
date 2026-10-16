@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -561,6 +562,78 @@ func TestEditDuringTheRunThenUndone(t *testing.T) {
 	gittest.Git(t, w.repo, "checkout", "--", "value.txt")
 	if r := w.run("run", "--name", "check", "--", "sh", "-c", script); r.code != 1 {
 		t.Errorf("the undone tree: exit %d, want 1; stderr: %s", r.code, r.stderr)
+	}
+}
+
+// precommit checks the index the way pre-commit does: it sets unstaged
+// changes aside, checks the files, and puts the changes back.
+const precommit = `p=$(mktemp); git diff --binary > "$p"; [ -s "$p" ] && git checkout -- .; ` +
+	`grep -qx good a.txt && grep -qx good b.txt; rc=$?; [ -s "$p" ] && git apply "$p"; rm -f "$p"; exit $rc`
+
+// What the key does not see, it misses only when named with --tool.
+func TestWhatTheKeyDoesNotSee(t *testing.T) {
+	tests := []struct {
+		name, tool, script string
+		setup, change      func(t *testing.T, repo string)
+	}{
+		{
+			name: "an ignored file", tool: "cat local.cfg", script: "grep -qx good local.cfg",
+			setup: func(t *testing.T, repo string) {
+				gittest.Write(t, repo, ".gitignore", "local.cfg\n")
+				gittest.Commit(t, repo)
+				gittest.Write(t, repo, "local.cfg", "good\n")
+			},
+			change: func(t *testing.T, repo string) { gittest.Write(t, repo, "local.cfg", "bad\n") },
+		},
+		{
+			name: "the index", tool: "git write-tree", script: precommit,
+			setup: func(t *testing.T, repo string) {
+				gittest.Write(t, repo, "a.txt", "good\n")
+				gittest.Write(t, repo, "b.txt", "good\n")
+				gittest.Commit(t, repo)
+				gittest.Write(t, repo, "a.txt", "good\n\n")
+				gittest.Git(t, repo, "add", "a.txt")
+				gittest.Write(t, repo, "b.txt", "bad\n") // not staged, so not checked
+			},
+			change: func(t *testing.T, repo string) { gittest.Git(t, repo, "add", "b.txt") },
+		},
+		{
+			name: "a ref", tool: "git rev-parse origin/main", script: "git diff --quiet origin/main -- b.txt",
+			setup: func(t *testing.T, repo string) {
+				gittest.Write(t, repo, "b.txt", "old\n")
+				gittest.Commit(t, repo)
+				gittest.Write(t, repo, "b.txt", "new\n")
+				gittest.Commit(t, repo)
+				gittest.Git(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+			},
+			change: func(t *testing.T, repo string) {
+				gittest.Git(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD~1")
+			},
+		},
+	}
+	for _, tt := range tests {
+		for _, named := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, %s", tt.name, map[bool]string{false: "not named", true: "named"}[named]), func(t *testing.T) {
+				w := newWorld(t)
+				tt.setup(t, w.repo)
+				args := []string{"run", "--name", "check"}
+				if named {
+					args = append(args, "--tool", tt.tool)
+				}
+				args = append(args, "--", "sh", "-c", tt.script)
+				if r := w.run(args...); r.code != 0 || !strings.Contains(r.stderr, "RECORDED") {
+					t.Fatalf("before the change: exit %d; stderr: %s", r.code, r.stderr)
+				}
+				tt.change(t, w.repo)
+				r := w.run(args...)
+				switch {
+				case named && (r.code != 1 || strings.Contains(r.stderr, "REUSED")):
+					t.Errorf("named: exit %d, want 1 from a run; stderr: %s", r.code, r.stderr)
+				case !named && !strings.Contains(r.stderr, "REUSED"):
+					t.Errorf("not named: exit %d, want the pass reused; stderr: %s", r.code, r.stderr)
+				}
+			})
+		}
 	}
 }
 
