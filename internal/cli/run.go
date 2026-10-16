@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -154,10 +155,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	defer os.Remove(logFile.Name())
 	defer logFile.Close()
-	capture := &capture{w: logFile, h: sha256.New()}
+	capture := &capture{w: logFile, h: sha256.New(), secret: []byte(f.token)}
+	outLog, errLog := &stream{c: capture}, &stream{c: capture}
 	intr := catchInterrupts()
 	defer intr.stop()
-	out := intr.execute(f.argv, stdin, io.MultiWriter(stdout, capture), io.MultiWriter(stderr, capture))
+	out := intr.execute(f.argv, stdin, io.MultiWriter(stdout, outLog), io.MultiWriter(stderr, errLog))
+	outLog.flush()
+	errLog.flush()
 	if out.err != nil || out.code != 0 {
 		return out.exit(stderr)
 	}
@@ -315,18 +319,22 @@ func warnf(stderr io.Writer, format string, args ...any) {
 	fmt.Fprintf(stderr, "track-record: warning: "+format+"\n", args...)
 }
 
-// capture keeps a combined copy of a command's output. It never fails a
-// write, so a copy that cannot be kept does not stop the output passing
-// through; err records why the copy is incomplete.
+// capture keeps a combined copy of a command's output streams, with each
+// copy of secret replaced by [token], since the command can still find the
+// token. It never fails a write, so a copy that cannot be kept does not stop
+// the output passing through; err records why the copy is incomplete.
 type capture struct {
-	mu  sync.Mutex
-	w   io.Writer
-	h   hash.Hash
-	n   int64
-	err error
+	mu     sync.Mutex
+	w      io.Writer
+	h      hash.Hash
+	n      int64
+	err    error
+	secret []byte
 }
 
-func (c *capture) Write(p []byte) (int, error) {
+var mask = []byte("[token]")
+
+func (c *capture) write(p []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.err == nil {
@@ -334,7 +342,35 @@ func (c *capture) Write(p []byte) (int, error) {
 	}
 	c.h.Write(p)
 	c.n += int64(len(p))
+}
+
+// stream is one output stream into a capture. It holds back an end that
+// could begin the secret until the next write shows whether it does, and
+// flush writes out what it holds.
+type stream struct {
+	c    *capture
+	held []byte
+}
+
+func (s *stream) Write(p []byte) (int, error) {
+	secret := s.c.secret
+	if len(secret) == 0 {
+		s.c.write(p)
+		return len(p), nil
+	}
+	b := bytes.ReplaceAll(append(s.held, p...), secret, mask)
+	keep := min(len(b), len(secret)-1)
+	for keep > 0 && !bytes.HasSuffix(b, secret[:keep]) {
+		keep--
+	}
+	s.c.write(b[:len(b)-keep])
+	s.held = append(s.held[:0], b[len(b)-keep:]...)
 	return len(p), nil
+}
+
+func (s *stream) flush() {
+	s.c.write(s.held)
+	s.held = nil
 }
 
 func keyCommand(args []string, stdout, stderr io.Writer) int {

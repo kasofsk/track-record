@@ -67,16 +67,20 @@ is. Revoking a token disowns every record it wrote.
 In a git checkout:
 
 ```sh
-export TRACK_RECORD_URL=http://localhost:8080 TRACK_RECORD_NAMESPACE=myproject
-export TRACK_RECORD_TOKEN=$(docker exec track-record track-record token create --namespace myproject --scope write --label ci)
+export TRACK_RECORD_URL=http://localhost:8080 TRACK_RECORD_NAMESPACE=myproject TRACK_RECORD_TOKEN_FILE=$HOME/.track-record-token
+(umask 077; docker exec track-record track-record token create --namespace myproject --scope write --label ci > "$TRACK_RECORD_TOKEN_FILE")
 track-record run --name test -- go test ./...
 ```
 
 The first run runs the command and records its pass. The next prints the
 recorded log and `track-record: REUSED test (recorded <time> by ci)` instead,
-until something in the key changes. The token can also come from the file
-`TRACK_RECORD_TOKEN_FILE` names. The command sees neither variable, so its log
-cannot carry the token, and a `track-record` inside it runs plainly.
+until something in the key changes.
+
+The token can come from `TRACK_RECORD_TOKEN` or `--token` instead, but those
+put it where `ps` can show it, and a file does not. The command runs without
+`TRACK_RECORD_TOKEN` or `TRACK_RECORD_TOKEN_FILE`, so a `track-record` inside
+it runs plainly. It can still find the token, so the log is stored with each
+copy of it replaced by `[token]`; the output on the terminal is left as it is.
 
 The key covers the namespace, `--name`, the command line, the working directory
 within the checkout, and every tracked file, or those `--inputs <pathspec>`

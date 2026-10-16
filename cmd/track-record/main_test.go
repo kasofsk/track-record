@@ -939,6 +939,39 @@ func TestTokenStaysOutOfTheCommand(t *testing.T) {
 	}
 }
 
+// The command can still read the token from track-record's environment, so
+// the log is stored with each copy of it masked. The terminal's is not.
+func TestTokenMaskedInTheLog(t *testing.T) {
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		t.Skip("no /proc here")
+	}
+	w := newWorld(t)
+	token := w.tokens["write"]
+	w.env = append(w.env, "HEAD="+token[:10], "TAIL="+token[10:])
+	tests := []struct {
+		name, script, log string
+	}{
+		{"environ", `tr '\0' '\n' < /proc/$PPID/environ | grep '^TRACK_RECORD_TOKEN='`, "TRACK_RECORD_TOKEN=[token]\n"},
+		{"split", `printf %s "$HEAD"; sleep 0.1; echo between >&2; sleep 0.1; echo "$TAIL"`, "between\n[token]\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := []string{"run", "--name", tt.name, "--", "sh", "-c", tt.script}
+			r := w.run(args...)
+			if r.code != 0 || !strings.Contains(r.stderr, "RECORDED") {
+				t.Fatalf("exit %d; stderr: %s", r.code, r.stderr)
+			}
+			if !strings.Contains(r.stdout, token) {
+				t.Errorf("the output passed on is not the command's: %q", r.stdout)
+			}
+			r = w.run(args...)
+			if r.code != 0 || !strings.Contains(r.stderr, "REUSED") || r.stdout != tt.log {
+				t.Errorf("exit %d; replayed %q, want %q; stderr: %s", r.code, r.stdout, tt.log, r.stderr)
+			}
+		})
+	}
+}
+
 func TestKeyCommand(t *testing.T) {
 	w := newWorld(t)
 	r := w.run("key", "--name", "probe", "--platform", "--salt", "x", "--env", "HOME", "--tool", "true", "--", "true")
