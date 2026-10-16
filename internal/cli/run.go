@@ -159,7 +159,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	outLog, errLog := &stream{c: capture}, &stream{c: capture}
 	intr := catchInterrupts()
 	defer intr.stop()
-	out := intr.execute(f.argv, stdin, io.MultiWriter(stdout, outLog), io.MultiWriter(stderr, errLog))
+	out := intr.execute(f.argv, childEnv(k), stdin, io.MultiWriter(stdout, outLog), io.MultiWriter(stderr, errLog))
 	outLog.flush()
 	errLog.flush()
 	if out.err != nil || out.code != 0 {

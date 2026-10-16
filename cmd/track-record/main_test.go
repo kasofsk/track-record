@@ -972,6 +972,49 @@ func TestTokenMaskedInTheLog(t *testing.T) {
 	}
 }
 
+// The command sees the key it runs under, and only that key.
+func TestKeyInTheCommandsEnvironment(t *testing.T) {
+	const script = `printf %s "${TRACK_RECORD_KEY-unset}"`
+	tests := []struct {
+		name  string
+		flags []string
+		env   []string
+		setup func(w *world)
+		keyed bool
+	}{
+		{name: "a miss", keyed: true},
+		{name: "fresh", flags: []string{"--fresh"}, keyed: true},
+		{name: "untracked files allowed", flags: []string{"--allow-untracked"}, setup: untracked, keyed: true},
+		{name: "no store", env: []string{"TRACK_RECORD_URL="}},
+		{name: "untracked files", setup: untracked},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			if tt.setup != nil {
+				tt.setup(w)
+			}
+			w.env = append([]string{"TRACK_RECORD_KEY=stale"}, tt.env...)
+			args := append(append([]string{"--name", "keyed"}, tt.flags...), "--", "sh", "-c", script)
+			want := "unset"
+			if tt.keyed {
+				k := w.run(append([]string{"key"}, args...)...)
+				if k.code != 0 {
+					t.Fatalf("key: %d %s", k.code, k.stderr)
+				}
+				want = strings.SplitN(k.stdout, "\n", 2)[0]
+			}
+			if r := w.run(append([]string{"run"}, args...)...); r.code != 0 || r.stdout != want {
+				t.Errorf("exit %d; TRACK_RECORD_KEY %q, want %q; stderr: %s", r.code, r.stdout, want, r.stderr)
+			}
+		})
+	}
+}
+
+func untracked(w *world) {
+	gittest.Write(w.t, w.repo, "new.txt", "new\n")
+}
+
 func TestKeyCommand(t *testing.T) {
 	w := newWorld(t)
 	r := w.run("key", "--name", "probe", "--platform", "--salt", "x", "--env", "HOME", "--tool", "true", "--", "true")

@@ -87,16 +87,27 @@ func (i *interrupts) watch(parent context.Context) (context.Context, func()) {
 	}
 }
 
-// execute runs argv with the given streams, passing on each signal caught
-// while it runs. The command does not see the store's token, which would
-// otherwise reach a log that every token in the namespace can read.
-func (i *interrupts) execute(argv []string, stdin io.Reader, stdout, stderr io.Writer) outcome {
+// childEnv is the environment a command runs with: this process's, without
+// the store's token, which would otherwise reach a log that every token in
+// the namespace can read, and with TRACK_RECORD_KEY set to the key it runs
+// under, or unset if there is none.
+func childEnv(key string) []string {
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return name == "TRACK_RECORD_TOKEN" || name == "TRACK_RECORD_TOKEN_FILE" || name == "TRACK_RECORD_KEY"
+	})
+	if key != "" {
+		env = append(env, "TRACK_RECORD_KEY="+key)
+	}
+	return env
+}
+
+// execute runs argv with env and the given streams, passing on each signal
+// caught while it runs.
+func (i *interrupts) execute(argv, env []string, stdin io.Reader, stdout, stderr io.Writer) outcome {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
-	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
-		name, _, _ := strings.Cut(kv, "=")
-		return name == "TRACK_RECORD_TOKEN" || name == "TRACK_RECORD_TOKEN_FILE"
-	})
+	cmd.Env = env
 	if err := cmd.Start(); err != nil {
 		return outcome{err: err}
 	}
@@ -127,10 +138,10 @@ func (i *interrupts) execute(argv []string, stdin io.Reader, stdout, stderr io.W
 	return o
 }
 
-// execute runs argv with the given streams, passing on SIGINT and SIGTERM
-// while it runs.
+// execute runs argv, under no key, with the given streams, passing on
+// SIGINT and SIGTERM while it runs.
 func execute(argv []string, stdin io.Reader, stdout, stderr io.Writer) outcome {
 	i := catchInterrupts()
 	defer i.stop()
-	return i.execute(argv, stdin, stdout, stderr)
+	return i.execute(argv, childEnv(""), stdin, stdout, stderr)
 }

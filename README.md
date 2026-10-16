@@ -89,6 +89,10 @@ matches, as it is on disk: its content, type and executable bit. `--tool
 `--tool 'java -version'`; `--env <name>` adds a variable's value, `--platform`
 the OS and architecture, and `--salt` a salt.
 
+The command runs with its key in `TRACK_RECORD_KEY`, so a randomized check
+can seed from it and a reused pass stays reproducible; with no key, as when no
+store is configured, the variable is unset.
+
 Untracked files within the inputs mean no lookup and no record, since the
 command may read files that will not be committed; `--allow-untracked` puts them
 into the key instead. A pass is recorded only if the inputs, read again when the
