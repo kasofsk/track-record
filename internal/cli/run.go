@@ -152,12 +152,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	defer os.Remove(logFile.Name())
 	defer logFile.Close()
 	capture := &capture{w: logFile, h: sha256.New()}
-	out := execute(f.argv, stdin, io.MultiWriter(stdout, capture), io.MultiWriter(stderr, capture))
+	intr := catchInterrupts()
+	defer intr.stop()
+	out := intr.execute(f.argv, stdin, io.MultiWriter(stdout, capture), io.MultiWriter(stderr, capture))
 	switch {
 	case out.err != nil || out.code != 0:
 		return out.exit(stderr)
-	case out.interrupted:
-		warnf(stderr, "%s exited 0 after a forwarded signal, so it is not recorded", f.name)
+	case intr.stop():
+		warnf(stderr, "%s exited 0 after an interrupt, so it is not recorded", f.name)
 		return 0
 	case out.ioErr != nil:
 		warnf(stderr, "%s passed but its output was not passed on in full, so it is not recorded: %v", f.name, out.ioErr)

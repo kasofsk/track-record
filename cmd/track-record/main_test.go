@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -506,58 +507,103 @@ func TestFresh(t *testing.T) {
 }
 
 func TestSignalPassthrough(t *testing.T) {
+	const (
+		trapped = `trap 'exit 7' INT TERM; echo ready; while :; do sleep 0.05; done`
+		passing = `trap 'exit 0' INT TERM; echo ready; while :; do sleep 0.05; done`
+		killed  = `echo ready; exec sleep 30`
+	)
 	tests := []struct {
 		name   string
 		signal syscall.Signal
+		group  bool // to the process group, as a terminal or a control-group stop sends it
 		script string
 		want   int
 	}{
-		{"handled", syscall.SIGTERM, `trap 'exit 7' TERM; echo ready; while :; do sleep 0.05; done`, 7},
-		{"killed", syscall.SIGTERM, `echo ready; exec sleep 30`, 128 + int(syscall.SIGTERM)},
-		{"interrupted", syscall.SIGINT, `echo ready; exec sleep 30`, 128 + int(syscall.SIGINT)},
-		{"handled and passing", syscall.SIGTERM, `trap 'exit 0' TERM; echo ready; while :; do sleep 0.05; done`, 0},
+		{"handled", syscall.SIGTERM, false, trapped, 7},
+		{"killed", syscall.SIGTERM, false, killed, 128 + int(syscall.SIGTERM)},
+		{"interrupted", syscall.SIGINT, false, killed, 128 + int(syscall.SIGINT)},
+		{"handled and passing", syscall.SIGTERM, false, passing, 0},
+		{"group handled", syscall.SIGTERM, true, trapped, 7},
+		{"group killed", syscall.SIGTERM, true, killed, 128 + int(syscall.SIGTERM)},
+		{"group interrupted", syscall.SIGINT, true, killed, 128 + int(syscall.SIGINT)},
+		{"group handled and passing", syscall.SIGINT, true, passing, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if signal.Ignored(tt.signal) {
-				t.Skipf("%v is ignored here, and so would be in the command", tt.signal)
-			}
 			w := newWorld(t)
-			cmd := w.command("run", "--name", "sig", "--", "sh", "-c", tt.script)
-			stdout, err := cmd.StdoutPipe()
-			if err != nil {
-				t.Fatal(err)
+			code, stderr := w.signalled(tt.signal, tt.group, tt.script)
+			if code != tt.want {
+				t.Errorf("exit %d, want %d; stderr: %s", code, tt.want, stderr)
 			}
-			var stderr syncBuffer
-			cmd.Stderr = &stderr
-			// In a group of its own, so a signal that is not passed on can
-			// fail the test by killing track-record and its command together.
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-			if err := cmd.Start(); err != nil {
-				t.Fatal(err)
-			}
-			stuck := time.AfterFunc(10*time.Second, func() {
-				t.Errorf("still running 10s after %v; stderr: %s", tt.signal, stderr.String())
-				syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			})
-			defer stuck.Stop()
-			lines := bufio.NewReader(stdout)
-			if line, err := lines.ReadString('\n'); err != nil || line != "ready\n" {
-				t.Fatalf("read %q, %v; stderr: %s", line, err, stderr.String())
-			}
-			if err := cmd.Process.Signal(tt.signal); err != nil {
-				t.Fatal(err)
-			}
-			io.Copy(io.Discard, lines)
-			cmd.Wait()
-			if code := cmd.ProcessState.ExitCode(); code != tt.want {
-				t.Errorf("exit %d (%v), want %d; stderr: %s", code, cmd.ProcessState, tt.want, stderr.String())
-			}
-			if strings.Contains(stderr.String(), "RECORDED") {
-				t.Errorf("an interrupted run was recorded: %s", stderr.String())
+			if strings.Contains(stderr, "RECORDED") {
+				t.Errorf("an interrupted run was recorded: %s", stderr)
 			}
 		})
 	}
+}
+
+// A signal sent to the group reaches the command and track-record at once,
+// so the command can exit 0 before track-record has handled its copy.
+func TestGroupInterruptIsNeverRecorded(t *testing.T) {
+	w := newWorld(t)
+	const script = `trap 'exit 0' INT; echo ready; while :; do :; done`
+	k := w.run("key", "--name", "sig", "--", "sh", "-c", script)
+	if k.code != 0 {
+		t.Fatalf("key: %d %s", k.code, k.stderr)
+	}
+	for i := range 100 {
+		if code, stderr := w.signalled(syscall.SIGINT, true, script); code != 0 || strings.Contains(stderr, "RECORDED") {
+			t.Fatalf("run %d: exit %d; stderr: %s", i, code, stderr)
+		}
+	}
+	key := strings.SplitN(k.stdout, "\n", 2)[0]
+	if _, err := w.store.Record(context.Background(), "acme", key, time.Now()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("an interrupted run is on record: %v", err)
+	}
+}
+
+// signalled runs script under track-record in a process group of its own,
+// sends sig once the script prints "ready", and returns the exit code and
+// standard error.
+func (w *world) signalled(sig syscall.Signal, group bool, script string) (int, string) {
+	w.t.Helper()
+	if signal.Ignored(sig) {
+		w.t.Skipf("%v is ignored here, and so would be in the command", sig)
+	}
+	cmd := w.command("run", "--name", "sig", "--", "sh", "-c", script)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	var stderr syncBuffer
+	cmd.Stderr = &stderr
+	// In a group of its own, so a signal that is not passed on can fail the
+	// test by killing track-record and its command together.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		w.t.Fatal(err)
+	}
+	stuck := time.AfterFunc(10*time.Second, func() {
+		w.t.Errorf("still running 10s after %v; stderr: %s", sig, stderr.String())
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	})
+	defer stuck.Stop()
+	lines := bufio.NewReader(stdout)
+	if line, err := lines.ReadString('\n'); err != nil || line != "ready\n" {
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		cmd.Wait()
+		w.t.Fatalf("read %q, %v; stderr: %s", line, err, stderr.String())
+	}
+	pid := cmd.Process.Pid
+	if group {
+		pid = -pid
+	}
+	if err := syscall.Kill(pid, sig); err != nil {
+		w.t.Fatal(err)
+	}
+	io.Copy(io.Discard, lines)
+	cmd.Wait()
+	return cmd.ProcessState.ExitCode(), stderr.String()
 }
 
 type syncBuffer struct {
