@@ -161,3 +161,34 @@ func TestWritesAlongsideAnotherConnection(t *testing.T) {
 		t.Errorf("%d of 1000 records failed alongside another writer; the first: %v", failed, first)
 	}
 }
+
+// A log uploaded again, by a run whose output matches an earlier one, is
+// renewed, so a sweep between the upload and the run's record spares it.
+func TestLogStoredAgainIsRenewed(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	_, tok, err := s.CreateToken(ctx, "acme", Write, "ci", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("ok\n")
+	d := sha256.Sum256(data)
+	digest := hex.EncodeToString(d[:])
+	if created, err := s.PutLog(ctx, "acme", digest, data, t0); err != nil || !created {
+		t.Fatalf("first upload: created %v, %v", created, err)
+	}
+	now := t0.Add(2 * time.Hour)
+	if created, err := s.PutLog(ctx, "acme", digest, data, now); err != nil || created {
+		t.Fatalf("second upload: created %v, %v", created, err)
+	}
+	// An upload stamped earlier does not undo the renewal.
+	if _, err := s.PutLog(ctx, "acme", digest, data, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, logs, err := s.Sweep(ctx, now.Add(time.Second), time.Hour); err != nil || logs != 0 {
+		t.Fatalf("sweep: %d logs deleted, %v", logs, err)
+	}
+	if _, _, err := s.PutRecord(ctx, "acme", strings.Repeat("a", 64), "unit", []byte(`{}`), &api.Log{Digest: digest, Size: int64(len(data))}, tok, now.Add(2*time.Second), time.Hour); err != nil {
+		t.Errorf("record: %v", err)
+	}
+}

@@ -246,16 +246,32 @@ func (s *Store) PutRecord(ctx context.Context, namespace, key, name string, stat
 }
 
 // PutLog stores a log under its digest, which the caller has checked. The
-// bool reports whether it was not already stored.
+// bool reports whether it was not already stored. Storing a log again
+// renews it, so a sweep spares it for the record about to refer to it.
 func (s *Store) PutLog(ctx context.Context, namespace, digest string, data []byte, now time.Time) (bool, error) {
-	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO logs (namespace, digest, bytes, size, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (namespace, digest) DO NOTHING`,
-		namespace, digest, data, len(data), now.Unix())
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx,
+		`UPDATE logs SET created_at = max(created_at, ?) WHERE namespace = ? AND digest = ?`,
+		now.Unix(), namespace, digest)
 	if err != nil {
 		return false, err
 	}
 	n, err := res.RowsAffected()
-	return n == 1, err
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO logs (namespace, digest, bytes, size, created_at) VALUES (?, ?, ?, ?, ?)`,
+			namespace, digest, data, len(data), now.Unix()); err != nil {
+			return false, err
+		}
+	}
+	return n == 0, tx.Commit()
 }
 
 // Log returns a stored log's bytes.
