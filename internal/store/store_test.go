@@ -2,12 +2,17 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kasofsk/track-record/internal/api"
 )
 
 var t0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -94,5 +99,65 @@ func TestWritesOnlyBesideTheDatabase(t *testing.T) {
 		if got != want {
 			t.Errorf("%s = %s, want %s", pragma, got, want)
 		}
+	}
+}
+
+// The server records passes while a token command, a second process with
+// its own connection, writes to the same database.
+func TestWritesAlongsideAnotherConnection(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "db")
+	server, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	admin, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	_, tok, err := server.CreateToken(ctx, "acme", Write, "ci", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("ok\n")
+	d := sha256.Sum256(data)
+	digest := hex.EncodeToString(d[:])
+	if _, err := server.PutLog(ctx, "acme", digest, data, t0); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	adminErr := make(chan error, 1)
+	go func() {
+		defer close(adminErr)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, _, err := admin.CreateToken(ctx, "acme", Read, fmt.Sprint("t", i), t0); err != nil {
+				adminErr <- err
+				return
+			}
+		}
+	}()
+	var failed int
+	var first error
+	for i := range 1000 {
+		_, _, err := server.PutRecord(ctx, "acme", fmt.Sprintf("%064x", i), "unit", []byte(`{}`), &api.Log{Digest: digest, Size: int64(len(data))}, tok, t0, time.Hour)
+		if err != nil {
+			if failed++; first == nil {
+				first = err
+			}
+		}
+	}
+	close(stop)
+	if err := <-adminErr; err != nil {
+		t.Errorf("creating tokens: %v", err)
+	}
+	if failed > 0 {
+		t.Errorf("%d of 1000 records failed alongside another writer; the first: %v", failed, first)
 	}
 }
