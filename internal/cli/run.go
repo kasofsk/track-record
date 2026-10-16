@@ -161,6 +161,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if out.err != nil || out.code != 0 {
 		return out.exit(stderr)
 	}
+	// Signals are caught until the inputs have been read again: a signal
+	// sent to the whole group may reach the command first, and this gives
+	// track-record's copy time to arrive.
 	changed := changedSince(ctx, f, k)
 	switch {
 	case intr.stop():
