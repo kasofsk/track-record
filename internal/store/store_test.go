@@ -192,3 +192,106 @@ func TestLogStoredAgainIsRenewed(t *testing.T) {
 		t.Errorf("record: %v", err)
 	}
 }
+
+// recorded stores a pass for key written by a token of label at t0 with a
+// one hour ttl.
+func recorded(t *testing.T, s *Store, label string) (Token, string) {
+	t.Helper()
+	_, tok, err := s.CreateToken(context.Background(), "acme", Write, label, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := strings.Repeat("a", 64)
+	if _, _, err := s.PutRecord(context.Background(), "acme", key, "unit", []byte(`{}`), nil, tok, t0, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	return tok, key
+}
+
+// A lookup that hits renews the record to a ttl after the lookup, so a record
+// in use outlives the ttl it was recorded with.
+func TestRecordHitRenews(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	_, key := recorded(t, s, "ci")
+	t1 := t0.Add(50 * time.Minute)
+	r, err := s.Record(ctx, "acme", key, t1, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := t1.Add(time.Hour); !r.ExpiresAt.Equal(want) {
+		t.Errorf("expires %v, want %v", r.ExpiresAt, want)
+	}
+	// After the original expiry, before the renewed one.
+	if _, err := s.Record(ctx, "acme", key, t0.Add(90*time.Minute), time.Hour); err != nil {
+		t.Errorf("lookup after the original expiry: %v", err)
+	}
+}
+
+// A lookup never shortens a record that already lives longer.
+func TestRecordHitDoesNotShorten(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	_, key := recorded(t, s, "ci")
+	r, err := s.Record(ctx, "acme", key, t0.Add(time.Minute), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := t0.Add(time.Hour); !r.ExpiresAt.Equal(want) {
+		t.Errorf("expires %v, want %v", r.ExpiresAt, want)
+	}
+}
+
+func TestRecordNotLookedUpLapses(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	_, key := recorded(t, s, "ci")
+	if _, err := s.Record(ctx, "acme", key, t0.Add(30*time.Minute), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record(ctx, "acme", key, t0.Add(30*time.Minute).Add(time.Hour), time.Hour); !errors.Is(err, ErrNotFound) {
+		t.Errorf("lookup a ttl after the last: %v, want ErrNotFound", err)
+	}
+}
+
+func TestRecordOfRevokedWriterIsNotRenewed(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	tok, key := recorded(t, s, "ci")
+	if err := s.RevokeToken(ctx, tok.ID, t0.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	t1 := t0.Add(30 * time.Minute)
+	if _, err := s.Record(ctx, "acme", key, t1, time.Hour); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("lookup: %v, want ErrNotFound", err)
+	}
+	if got := expiry(t, s, key); !got.Equal(t0.Add(time.Hour)) {
+		t.Errorf("expires %v, want it unrenewed at %v", got, t0.Add(time.Hour))
+	}
+}
+
+func TestExpiredRecordIsNotRenewed(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	_, key := recorded(t, s, "ci")
+	if _, err := s.Record(ctx, "acme", key, t0.Add(2*time.Hour), time.Hour); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("lookup: %v, want ErrNotFound", err)
+	}
+	if got := expiry(t, s, key); !got.Equal(t0.Add(time.Hour)) {
+		t.Errorf("expires %v, want it unrenewed at %v", got, t0.Add(time.Hour))
+	}
+	// Nor does it come back for a later lookup.
+	if _, err := s.Record(ctx, "acme", key, t0.Add(2*time.Hour+time.Minute), time.Hour); !errors.Is(err, ErrNotFound) {
+		t.Errorf("later lookup: %v, want ErrNotFound", err)
+	}
+}
+
+// expiry reads a record's stored expiry whether or not it is live.
+func expiry(t *testing.T, s *Store, key string) time.Time {
+	t.Helper()
+	var e int64
+	if err := s.db.QueryRow(`SELECT expires_at FROM records WHERE key = ?`, key).Scan(&e); err != nil {
+		t.Fatal(err)
+	}
+	return unix(e)
+}

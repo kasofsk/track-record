@@ -210,11 +210,15 @@ func (s *Store) Authenticate(ctx context.Context, secret string) (Token, error) 
 const live = `records.expires_at > ? AND EXISTS (
 	SELECT 1 FROM tokens WHERE tokens.id = records.writer_id AND tokens.revoked_at IS NULL)`
 
-// Record returns the live record for key in namespace.
-func (s *Store) Record(ctx context.Context, namespace, key string, now time.Time) (api.Record, error) {
+// Record returns the live record for key in namespace and renews it: a
+// lookup is a use, so the record now lives until ttl after now, or as long as
+// it already would. One statement reads and renews, so a sweep cannot delete
+// the record between the two, and a record that is not live is not renewed.
+func (s *Store) Record(ctx context.Context, namespace, key string, now time.Time, ttl time.Duration) (api.Record, error) {
 	r, err := scanRecord(s.db.QueryRowContext(ctx,
-		`SELECT `+recordColumns+` FROM records WHERE namespace = ? AND key = ? AND `+live,
-		namespace, key, now.Unix()))
+		`UPDATE records SET expires_at = max(expires_at, ?) WHERE namespace = ? AND key = ? AND `+live+`
+		RETURNING `+recordColumns,
+		now.Add(ttl).Unix(), namespace, key, now.Unix()))
 	if errors.Is(err, sql.ErrNoRows) {
 		return api.Record{}, ErrNotFound
 	}

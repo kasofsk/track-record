@@ -22,7 +22,7 @@ import (
 
 // Config is how the server treats what it stores.
 type Config struct {
-	TTL          time.Duration // how long a record lives
+	TTL          time.Duration // how long a record lives after it was last recorded or reused
 	MaxLog       int64         // bytes
 	MaxStatement int64         // bytes
 	Logger       *slog.Logger
@@ -138,7 +138,7 @@ func (s *Server) getRecord(w http.ResponseWriter, r *http.Request, tok store.Tok
 		writeError(w, http.StatusBadRequest, "a key is 64 lowercase hex characters")
 		return
 	}
-	rec, err := s.store.Record(r.Context(), tok.Namespace, key, s.cfg.Now())
+	rec, err := s.store.Record(r.Context(), tok.Namespace, key, s.cfg.Now(), s.cfg.TTL)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "no record")
 		return
