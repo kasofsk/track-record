@@ -28,7 +28,7 @@ func serve(args []string, stderr io.Writer) int {
 	fs := newFlagSet("serve", "serve [flags]", stderr)
 	listen := fs.String("listen", ":8080", "the address to listen on ($TRACK_RECORD_LISTEN)")
 	db := dbFlag(fs)
-	ttl := fs.Duration("ttl", 30*24*time.Hour, "how long a record lives ($TRACK_RECORD_TTL)")
+	ttl := fs.Duration("ttl", 30*24*time.Hour, "how long a record lives after it was last recorded or reused ($TRACK_RECORD_TTL)")
 	logMax := fs.Int64("log-max", 8<<20, "the largest log stored, in bytes ($TRACK_RECORD_LOG_MAX)")
 	statementMax := fs.Int64("statement-max", 64<<10, "the largest statement accepted, in bytes ($TRACK_RECORD_STATEMENT_MAX)")
 	err := parse(fs, args, []envFlag{

@@ -400,6 +400,29 @@ func TestSizeLimits(t *testing.T) {
 	f.expect("PUT", "/v1/records/a/"+k, "writeA", put, http.StatusRequestEntityTooLarge)
 }
 
+// A lookup renews the record it returns, so one in use outlives its first
+// ttl and the log it refers to survives a sweep after that.
+func TestLookupRenewsRecord(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	l := []byte("log")
+	f.expect("PUT", "/v1/logs/a/"+digest(l), "writeA", l, http.StatusCreated)
+	k, put := pass(t, "unit", &api.Log{Digest: digest(l), Size: int64(len(l))}, "true")
+	f.expect("PUT", "/v1/records/a/"+k, "writeA", put, http.StatusCreated)
+
+	f.now = t0.Add(59 * time.Minute)
+	f.expect("GET", "/v1/records/a/"+k, "readA", nil, http.StatusOK)
+	f.now = t0.Add(90 * time.Minute)
+	if err := f.server.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rec := decodeRecord(t, f.expect("GET", "/v1/records/a/"+k, "readA", nil, http.StatusOK))
+	f.expect("GET", "/v1/logs/a/"+digest(l), "readA", nil, http.StatusOK)
+	if want := f.now.Add(time.Hour); !rec.ExpiresAt.Equal(want) {
+		t.Errorf("expires %v, want %v", rec.ExpiresAt, want)
+	}
+}
+
 func TestExpiryAndSweep(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -410,9 +433,10 @@ func TestExpiryAndSweep(t *testing.T) {
 	oldKey, oldPut := pass(t, "old", &api.Log{Digest: digest(swept), Size: int64(len(swept))}, "true")
 	f.expect("PUT", "/v1/records/a/"+oldKey, "writeA", oldPut, http.StatusCreated)
 
-	// At 59 minutes the record is live; at an hour it is gone.
+	// At 59 minutes the record is live, which a put sees without a lookup
+	// renewing it; at an hour it is gone.
 	f.now = t0.Add(59 * time.Minute)
-	f.expect("GET", "/v1/records/a/"+oldKey, "readA", nil, http.StatusOK)
+	f.expect("PUT", "/v1/records/a/"+oldKey, "writeA", oldPut, http.StatusOK)
 	liveKey, livePut := pass(t, "live", &api.Log{Digest: digest(kept), Size: int64(len(kept))}, "true")
 	f.expect("PUT", "/v1/records/a/"+liveKey, "writeA", livePut, http.StatusCreated)
 	f.now = t0.Add(time.Hour)

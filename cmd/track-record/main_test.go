@@ -237,7 +237,7 @@ func TestFailuresAreNotRecorded(t *testing.T) {
 				t.Errorf("recorded: %s", r.stderr)
 			}
 			w.expect(w.probe(), code, 2)
-			if _, err := w.store.Record(context.Background(), "acme", w.key(), time.Now()); err != store.ErrNotFound {
+			if _, err := w.store.Record(context.Background(), "acme", w.key(), time.Now(), time.Hour); err != store.ErrNotFound {
 				t.Errorf("a record exists: %v", err)
 			}
 		})
@@ -701,7 +701,7 @@ func TestGroupInterruptIsNeverRecorded(t *testing.T) {
 		}
 	}
 	key := strings.SplitN(k.stdout, "\n", 2)[0]
-	if _, err := w.store.Record(context.Background(), "acme", key, time.Now()); !errors.Is(err, store.ErrNotFound) {
+	if _, err := w.store.Record(context.Background(), "acme", key, time.Now(), time.Hour); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("an interrupted run is on record: %v", err)
 	}
 }
@@ -763,7 +763,7 @@ func TestSignalDuringTheRecheck(t *testing.T) {
 				t.Errorf("exit %d; stderr: %s", code, stderr.String())
 			}
 			key := strings.SplitN(k.stdout, "\n", 2)[0]
-			if _, err := w.store.Record(context.Background(), "acme", key, time.Now()); !errors.Is(err, store.ErrNotFound) {
+			if _, err := w.store.Record(context.Background(), "acme", key, time.Now(), time.Hour); !errors.Is(err, store.ErrNotFound) {
 				t.Errorf("an interrupted run is on record: %v", err)
 			}
 		})
@@ -1111,7 +1111,7 @@ func TestKeyCommand(t *testing.T) {
 
 	// The key printed is the key run records under.
 	w.expect(w.probe(), 0, 1, "RECORDED")
-	if _, err := w.store.Record(context.Background(), "acme", w.key(), time.Now()); err != nil {
+	if _, err := w.store.Record(context.Background(), "acme", w.key(), time.Now(), time.Hour); err != nil {
 		t.Errorf("no record under the printed key: %v", err)
 	}
 

@@ -46,7 +46,7 @@ again, and every pass earned again.
 | ----------------- | ---------------------------- | ---------------------------------------------- |
 | `--listen`        | `TRACK_RECORD_LISTEN`        | `:8080`                                        |
 | `--db`            | `TRACK_RECORD_DB`            | `track-record.db`; in the image, `/data/track-record.db` |
-| `--ttl`           | `TRACK_RECORD_TTL`           | `720h`: how long a record lives                |
+| `--ttl`           | `TRACK_RECORD_TTL`           | `720h`: how long a record lives after it was last recorded or reused |
 | `--log-max`       | `TRACK_RECORD_LOG_MAX`       | `8388608` bytes                                |
 | `--statement-max` | `TRACK_RECORD_STATEMENT_MAX` | `65536` bytes                                  |
 
