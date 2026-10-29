@@ -122,15 +122,15 @@ public, does not serve them.
 
 `run` records how long the command took with its pass, and the server counts:
 
-| Series                                                              | Labels              | What it counts                                          |
-| ------------------------------------------------------------------- | ------------------- | ------------------------------------------------------- |
-| `track_record_hits_total`                                           | `namespace`, `name` | lookups that found a pass on record                     |
-| `track_record_misses_total`                                         | `namespace`         | lookups that found none                                 |
-| `track_record_saved_seconds_total`                                  | `namespace`, `name` | for each hit, how long the pass found took: time saved  |
-| `track_record_passes_total`                                         | `namespace`, `name` | passes recorded, and those that found one already there |
-| `track_record_pass_seconds_total`                                   | `namespace`, `name` | how long each of those passes took                      |
-| `track_record_swept_records_total`, `track_record_swept_logs_total` |                     | what the sweeper deleted                                |
-| `track_record_http_request_duration_seconds`                        | `route`, `code`     | each request, by how long it took                       |
+| Series                                                              | Labels                     | What it counts                                          |
+| ------------------------------------------------------------------- | -------------------------- | ------------------------------------------------------- |
+| `track_record_hits_total`                                           | `record_namespace`, `name` | lookups that found a pass on record                     |
+| `track_record_misses_total`                                         | `record_namespace`         | lookups that found none                                 |
+| `track_record_saved_seconds_total`                                  | `record_namespace`, `name` | for each hit, how long the pass found took: time saved  |
+| `track_record_passes_total`                                         | `record_namespace`, `name` | passes recorded, and those that found one already there |
+| `track_record_pass_seconds_total`                                   | `record_namespace`, `name` | how long each of those passes took                      |
+| `track_record_swept_records_total`, `track_record_swept_logs_total` |                            | what the sweeper deleted                                |
+| `track_record_http_request_duration_seconds`                        | `route`, `code`            | each request, by how long it took                       |
 
 The Go runtime's and the process's series are there too, with `go_build_info`.
 
@@ -146,8 +146,15 @@ sum(increase(track_record_pass_seconds_total[1d]))   # time spent earning passes
   send its duration adds nothing to it.
 - The server hears only of passes. A command that fails, or runs with no store,
   is not counted, so time spent on CI as a whole is the CI's to measure.
+- `record_namespace` is the store's namespace. It is not `namespace` because
+  a Kubernetes scrape gives every series the pod's namespace under that name,
+  and Prometheus would rename ours to `exported_namespace`.
 - The counters start from zero when the server does, which `rate` and
-  `increase` allow for.
+  `increase` allow for. A series first appears holding its first count,
+  though, which `increase` cannot see, so each name's first hit or pass after
+  a start is missed unless Prometheus runs with
+  `--enable-feature=created-timestamp-zero-ingestion`, which reads when each
+  series began.
 
 ## Develop
 
