@@ -46,6 +46,8 @@ type Token struct {
 // as Unix seconds.
 type Store struct{ db *sql.DB }
 
+// schema is the tables as they were first made; migrations holds every change
+// since.
 const schema = `
 CREATE TABLE IF NOT EXISTS tokens (
 	id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,6 +83,15 @@ CREATE TABLE IF NOT EXISTS logs (
 );
 `
 
+// migrations change the schema's tables in order. A database's user_version
+// counts those it has had, so each runs once, whether the database is new or
+// was made before the migration was written.
+var migrations = []string{
+	// How long the command ran to earn the record, in milliseconds; NULL if
+	// its writer did not say.
+	`ALTER TABLE records ADD COLUMN duration_ms INTEGER`,
+}
+
 // Open opens the database at path, creating it and its tables if need be.
 func Open(path string) (*Store, error) {
 	// SQLite writes the database, its WAL and its shared-memory file beside
@@ -99,7 +110,39 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
 	return &Store{db: db}, nil
+}
+
+// migrate runs the migrations the database has not had. It reads the version
+// inside the transaction, which holds the write lock, so a second process
+// opening the database at once waits and then finds nothing left to run. A
+// database a later track-record has migrated further is left as it is.
+func migrate(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var version int
+	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return err
+	}
+	if version >= len(migrations) {
+		return nil
+	}
+	for i, m := range migrations[version:] {
+		if _, err := tx.Exec(m); err != nil {
+			return fmt.Errorf("migration %d: %w", version+i+1, err)
+		}
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations))); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // OpenExisting opens the database at path, which must already be one Open
@@ -228,8 +271,9 @@ func (s *Store) Record(ctx context.Context, namespace, key string, now time.Time
 // PutRecord records a pass written by writer, unless a live record for the
 // key exists, in which case it returns that record unchanged; the first
 // writer wins. The bool reports whether the record was created. A log must
-// already be stored in the namespace.
-func (s *Store) PutRecord(ctx context.Context, namespace, key, name string, statement []byte, log *api.Log, writer Token, now time.Time, ttl time.Duration) (api.Record, bool, error) {
+// already be stored in the namespace. durationMs is how long the pass took to
+// run, or nil if the writer did not say.
+func (s *Store) PutRecord(ctx context.Context, namespace, key, name string, statement []byte, log *api.Log, durationMs *int64, writer Token, now time.Time, ttl time.Duration) (api.Record, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return api.Record{}, false, err
@@ -249,9 +293,13 @@ func (s *Store) PutRecord(ctx context.Context, namespace, key, name string, stat
 		digest = sql.NullString{String: log.Digest, Valid: true}
 		size = sql.NullInt64{Int64: log.Size, Valid: true}
 	}
+	var duration sql.NullInt64
+	if durationMs != nil {
+		duration = sql.NullInt64{Int64: *durationMs, Valid: true}
+	}
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO records (namespace, key, name, statement, writer_id, writer_label, recorded_at, expires_at, log_digest, log_size)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO records (namespace, key, name, statement, writer_id, writer_label, recorded_at, expires_at, log_digest, log_size, duration_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (namespace, key) DO UPDATE SET
 			name = excluded.name,
 			statement = excluded.statement,
@@ -260,9 +308,10 @@ func (s *Store) PutRecord(ctx context.Context, namespace, key, name string, stat
 			recorded_at = excluded.recorded_at,
 			expires_at = excluded.expires_at,
 			log_digest = excluded.log_digest,
-			log_size = excluded.log_size
+			log_size = excluded.log_size,
+			duration_ms = excluded.duration_ms
 		WHERE NOT (`+live+`)`,
-		namespace, key, name, string(statement), writer.ID, writer.Label, now.Unix(), now.Add(ttl).Unix(), digest, size, now.Unix())
+		namespace, key, name, string(statement), writer.ID, writer.Label, now.Unix(), now.Add(ttl).Unix(), digest, size, duration, now.Unix())
 	if err != nil {
 		return api.Record{}, false, err
 	}
@@ -369,21 +418,24 @@ func scanToken(row scanner) (Token, error) {
 	return t, nil
 }
 
-const recordColumns = `statement, name, writer_id, writer_label, recorded_at, expires_at, log_digest, log_size`
+const recordColumns = `statement, name, writer_id, writer_label, recorded_at, expires_at, log_digest, log_size, duration_ms`
 
 func scanRecord(row scanner) (api.Record, error) {
 	var r api.Record
 	var statement string
 	var recorded, expires int64
 	var digest sql.NullString
-	var size sql.NullInt64
-	if err := row.Scan(&statement, &r.Name, &r.Writer.ID, &r.Writer.Label, &recorded, &expires, &digest, &size); err != nil {
+	var size, duration sql.NullInt64
+	if err := row.Scan(&statement, &r.Name, &r.Writer.ID, &r.Writer.Label, &recorded, &expires, &digest, &size, &duration); err != nil {
 		return api.Record{}, err
 	}
 	r.Statement = []byte(statement)
 	r.RecordedAt, r.ExpiresAt = unix(recorded), unix(expires)
 	if digest.Valid {
 		r.Log = &api.Log{Digest: digest.String, Size: size.Int64}
+	}
+	if duration.Valid {
+		r.DurationMs = &duration.Int64
 	}
 	return r, nil
 }

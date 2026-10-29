@@ -19,17 +19,19 @@ import (
 	"github.com/kasofsk/track-record/internal/key"
 	"github.com/kasofsk/track-record/internal/statement"
 	"github.com/kasofsk/track-record/internal/store"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 var t0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 
 type fixture struct {
-	t      *testing.T
-	store  *store.Store
-	server *Server
-	now    time.Time
-	logs   bytes.Buffer
-	tokens map[string]string // by name: readA, writeA, writeA2, writeB, revoked
+	t       *testing.T
+	store   *store.Store
+	server  *Server
+	now     time.Time
+	logs    bytes.Buffer
+	metrics *prometheus.Registry
+	tokens  map[string]string // by name: readA, writeA, writeA2, writeB, revoked
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -39,12 +41,13 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	f := &fixture{t: t, store: st, now: t0, tokens: map[string]string{}}
+	f := &fixture{t: t, store: st, now: t0, metrics: prometheus.NewRegistry(), tokens: map[string]string{}}
 	f.server = New(st, Config{
 		TTL:          time.Hour,
 		MaxLog:       1 << 10,
 		MaxStatement: 4 << 10,
 		Logger:       slog.New(slog.NewJSONHandler(&f.logs, nil)),
+		Metrics:      f.metrics,
 		Now:          func() time.Time { return f.now },
 	})
 	for name, spec := range map[string]struct {
@@ -111,6 +114,52 @@ func body(t *testing.T, statement []byte, log *api.Log) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// timed returns the put body b, saying that its pass took ms to run.
+func timed(t *testing.T, b []byte, ms int64) []byte {
+	t.Helper()
+	var p api.PutRecord
+	if err := json.Unmarshal(b, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.DurationMs = &ms
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// series returns the value of a counter, or the count of a histogram, whose
+// labels are exactly these, or 0 if there is none.
+func (f *fixture) series(name string, labels map[string]string) float64 {
+	f.t.Helper()
+	families, err := f.metrics.Gather()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	for _, fam := range families {
+		if fam.GetName() != name {
+			continue
+		}
+	metrics:
+		for _, m := range fam.GetMetric() {
+			if len(m.GetLabel()) != len(labels) {
+				continue
+			}
+			for _, l := range m.GetLabel() {
+				if v, ok := labels[l.GetName()]; !ok || v != l.GetValue() {
+					continue metrics
+				}
+			}
+			if h := m.GetHistogram(); h != nil {
+				return float64(h.GetSampleCount())
+			}
+			return m.GetCounter().GetValue()
+		}
+	}
+	return 0
 }
 
 func digest(b []byte) string {
@@ -470,6 +519,86 @@ func TestExpiryAndSweep(t *testing.T) {
 	}
 	f.expect("GET", "/v1/logs/a/"+digest(young), "readA", nil, http.StatusOK)
 	f.expect("GET", "/v1/records/a/"+freshKey, "readA", nil, http.StatusOK)
+
+	// The first sweep took the old record's replacement, the live record
+	// and both their logs; the second, nothing.
+	if got := f.series("track_record_swept_records_total", nil); got != 2 {
+		t.Errorf("swept records = %v, want 2", got)
+	}
+	if got := f.series("track_record_swept_logs_total", nil); got != 2 {
+		t.Errorf("swept logs = %v, want 2", got)
+	}
+}
+
+// The series count lookups and passes, and how long each pass took to run,
+// by the namespace of the token and the name of the pass.
+func TestMetrics(t *testing.T) {
+	f := newFixture(t)
+	k, put := pass(t, "unit", nil, "true")
+	path := "/v1/records/a/" + k
+	f.expect("GET", path, "readA", nil, http.StatusNotFound)
+	f.expect("PUT", path, "writeA", timed(t, put, 1500), http.StatusCreated)
+	f.expect("GET", path, "readA", nil, http.StatusOK)
+	f.expect("GET", path, "writeA", nil, http.StatusOK)
+	// A pass that finds one already on record still took its time to run.
+	f.expect("PUT", path, "writeA2", timed(t, put, 250), http.StatusOK)
+	f.expect("PUT", path, "writeA", timed(t, put, -1), http.StatusBadRequest)
+	// A writer that does not say how long its pass took adds no time.
+	untimedKey, untimed := pass(t, "untimed", nil, "true")
+	f.expect("PUT", "/v1/records/a/"+untimedKey, "writeA", untimed, http.StatusCreated)
+	f.expect("GET", "/v1/records/a/"+untimedKey, "readA", nil, http.StatusOK)
+
+	unit := map[string]string{"namespace": "a", "name": "unit"}
+	untimedLabels := map[string]string{"namespace": "a", "name": "untimed"}
+	for _, tt := range []struct {
+		name   string
+		labels map[string]string
+		want   float64
+	}{
+		{"track_record_misses_total", map[string]string{"namespace": "a"}, 1},
+		{"track_record_hits_total", unit, 2},
+		{"track_record_saved_seconds_total", unit, 3},
+		{"track_record_passes_total", unit, 2},
+		{"track_record_pass_seconds_total", unit, 1.75},
+		{"track_record_hits_total", untimedLabels, 1},
+		{"track_record_saved_seconds_total", untimedLabels, 0},
+		{"track_record_passes_total", untimedLabels, 1},
+		{"track_record_pass_seconds_total", untimedLabels, 0},
+		{"track_record_http_request_duration_seconds", map[string]string{"route": "GET /v1/records/{namespace}/{key}", "code": "200"}, 3},
+		{"track_record_http_request_duration_seconds", map[string]string{"route": "PUT /v1/records/{namespace}/{key}", "code": "400"}, 1},
+	} {
+		if got := f.series(tt.name, tt.labels); got != tt.want {
+			t.Errorf("%s %v = %v, want %v", tt.name, tt.labels, got, tt.want)
+		}
+	}
+}
+
+// No label takes a value that a client without a token for it chose: not
+// the namespace in a refused request's path, nor a method or a path the
+// server has no route for.
+func TestMetricLabelsAreBounded(t *testing.T) {
+	f := newFixture(t)
+	k, put := pass(t, "unit", nil, "true")
+	f.expect("PUT", "/v1/records/a/"+k, "writeA", timed(t, put, 10), http.StatusCreated)
+	f.expect("GET", "/v1/records/chosen/"+k, "", nil, http.StatusUnauthorized)
+	f.expect("GET", "/v1/records/chosen/"+k, "writeA", nil, http.StatusForbidden)
+	f.expect("GET", "/v1/records/a/"+k, "writeB", nil, http.StatusForbidden)
+	f.expect("GET", "/v1/records/a/"+strings.Repeat("0", 64), "writeB", nil, http.StatusForbidden)
+	f.expect("CHOSEN", "/v1/records/a/"+k, "writeA", nil, http.StatusMethodNotAllowed)
+	f.expect("GET", "/chosen", "", nil, http.StatusNotFound)
+	families, err := f.metrics.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fam := range families {
+		for _, m := range fam.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if strings.Contains(strings.ToLower(l.GetValue()), "chosen") || (l.GetName() == "namespace" && l.GetValue() != "a") {
+					t.Errorf("%s has %s=%q", fam.GetName(), l.GetName(), l.GetValue())
+				}
+			}
+		}
+	}
 }
 
 func TestRequestLogOmitsTokensAndBodies(t *testing.T) {

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -146,7 +147,7 @@ func TestWritesAlongsideAnotherConnection(t *testing.T) {
 	var failed int
 	var first error
 	for i := range 1000 {
-		_, _, err := server.PutRecord(ctx, "acme", fmt.Sprintf("%064x", i), "unit", []byte(`{}`), &api.Log{Digest: digest, Size: int64(len(data))}, tok, t0, time.Hour)
+		_, _, err := server.PutRecord(ctx, "acme", fmt.Sprintf("%064x", i), "unit", []byte(`{}`), &api.Log{Digest: digest, Size: int64(len(data))}, nil, tok, t0, time.Hour)
 		if err != nil {
 			if failed++; first == nil {
 				first = err
@@ -188,7 +189,7 @@ func TestLogStoredAgainIsRenewed(t *testing.T) {
 	if _, logs, err := s.Sweep(ctx, now.Add(time.Second), time.Hour); err != nil || logs != 0 {
 		t.Fatalf("sweep: %d logs deleted, %v", logs, err)
 	}
-	if _, _, err := s.PutRecord(ctx, "acme", strings.Repeat("a", 64), "unit", []byte(`{}`), &api.Log{Digest: digest, Size: int64(len(data))}, tok, now.Add(2*time.Second), time.Hour); err != nil {
+	if _, _, err := s.PutRecord(ctx, "acme", strings.Repeat("a", 64), "unit", []byte(`{}`), &api.Log{Digest: digest, Size: int64(len(data))}, nil, tok, now.Add(2*time.Second), time.Hour); err != nil {
 		t.Errorf("record: %v", err)
 	}
 }
@@ -202,7 +203,7 @@ func recorded(t *testing.T, s *Store, label string) (Token, string) {
 		t.Fatal(err)
 	}
 	key := strings.Repeat("a", 64)
-	if _, _, err := s.PutRecord(context.Background(), "acme", key, "unit", []byte(`{}`), nil, tok, t0, time.Hour); err != nil {
+	if _, _, err := s.PutRecord(context.Background(), "acme", key, "unit", []byte(`{}`), nil, nil, tok, t0, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	return tok, key
@@ -283,6 +284,68 @@ func TestExpiredRecordIsNotRenewed(t *testing.T) {
 	// Nor does it come back for a later lookup.
 	if _, err := s.Record(ctx, "acme", key, t0.Add(2*time.Hour+time.Minute), time.Hour); !errors.Is(err, ErrNotFound) {
 		t.Errorf("later lookup: %v, want ErrNotFound", err)
+	}
+}
+
+// A record keeps how long its pass took to run, and a second writer's pass
+// does not change it, since the first record stands.
+func TestRecordKeepsItsDuration(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	_, tok, err := s.CreateToken(ctx, "acme", Write, "ci", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := strings.Repeat("a", 64)
+	first, again := int64(1500), int64(9)
+	for _, ms := range []*int64{&first, &again} {
+		rec, _, err := s.PutRecord(ctx, "acme", key, "unit", []byte(`{}`), nil, ms, tok, t0, time.Hour)
+		if err != nil || rec.DurationMs == nil || *rec.DurationMs != first {
+			t.Errorf("put %d ms: %+v, %v; want %d ms", *ms, rec, err, first)
+		}
+	}
+	rec, err := s.Record(ctx, "acme", key, t0, time.Hour)
+	if err != nil || rec.DurationMs == nil || *rec.DurationMs != first {
+		t.Errorf("Record = %+v, %v; want %d ms", rec, err, first)
+	}
+}
+
+// A database made before any migration gains what each adds, keeps its
+// records, and on every later open runs nothing again.
+func TestMigratesAnOlderDatabase(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "db")
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := strings.Repeat("a", 64)
+	for _, stmt := range []string{
+		schema,
+		`INSERT INTO tokens (hash, label, namespace, scope, created_at) VALUES ('h', 'ci', 'acme', 'write', 0)`,
+		fmt.Sprintf(`INSERT INTO records (namespace, key, name, statement, writer_id, writer_label, recorded_at, expires_at)
+			VALUES ('acme', '%s', 'unit', '{}', 1, 'ci', %d, %d)`, key, t0.Unix(), t0.Add(time.Hour).Unix()),
+	} {
+		if _, err := old.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old.Close()
+
+	for range 2 {
+		s, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec, err := s.Record(ctx, "acme", key, t0, time.Hour)
+		if err != nil || rec.Name != "unit" || rec.DurationMs != nil {
+			t.Errorf("Record = %+v, %v; want unit's, with no duration", rec, err)
+		}
+		var version int
+		if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != len(migrations) {
+			t.Errorf("user_version = %d, %v; want %d", version, err, len(migrations))
+		}
+		s.Close()
 	}
 }
 
