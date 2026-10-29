@@ -9,11 +9,13 @@ import (
 )
 
 // metrics are the server's Prometheus series. Every label has few values,
-// none of them the client's to choose freely: a namespace is the one its
-// token was minted for, never the one in the path; a name is one a writer
+// none of them the client's to choose freely: a record_namespace is the one
+// its token was minted for, never the one in the path; a name is one a writer
 // gave a pass; a route is one of the server's patterns, which name the
 // method, or empty for a request none matched; and a code is one the server
-// answered with.
+// answered with. The namespace is record_namespace because a scrape in
+// Kubernetes labels every series with the pod's namespace, and Prometheus
+// would rename a label of ours that collided with it.
 type metrics struct {
 	requests     *prometheus.HistogramVec
 	hits         *prometheus.CounterVec
@@ -37,23 +39,23 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 		hits: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "track_record_hits_total",
 			Help: "Lookups that found a pass on record.",
-		}, []string{"namespace", "name"}),
+		}, []string{"record_namespace", "name"}),
 		misses: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "track_record_misses_total",
 			Help: "Lookups that found no pass on record. The server does not know a missed command's name.",
-		}, []string{"namespace"}),
+		}, []string{"record_namespace"}),
 		savedSeconds: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "track_record_saved_seconds_total",
 			Help: "For each hit, how long the pass found took to run: the time the hit saved. A record whose writer did not say adds nothing.",
-		}, []string{"namespace", "name"}),
+		}, []string{"record_namespace", "name"}),
 		passes: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "track_record_passes_total",
 			Help: "Passes put on record, including those that found one already there.",
-		}, []string{"namespace", "name"}),
+		}, []string{"record_namespace", "name"}),
 		passSeconds: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "track_record_pass_seconds_total",
 			Help: "How long each pass put on record took to run. A put that does not say adds nothing.",
-		}, []string{"namespace", "name"}),
+		}, []string{"record_namespace", "name"}),
 		sweptRecords: f.NewCounter(prometheus.CounterOpts{
 			Name: "track_record_swept_records_total",
 			Help: "Records the sweeper deleted, having expired or been written by a revoked token.",

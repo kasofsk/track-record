@@ -548,14 +548,14 @@ func TestMetrics(t *testing.T) {
 	f.expect("PUT", "/v1/records/a/"+untimedKey, "writeA", untimed, http.StatusCreated)
 	f.expect("GET", "/v1/records/a/"+untimedKey, "readA", nil, http.StatusOK)
 
-	unit := map[string]string{"namespace": "a", "name": "unit"}
-	untimedLabels := map[string]string{"namespace": "a", "name": "untimed"}
+	unit := map[string]string{"record_namespace": "a", "name": "unit"}
+	untimedLabels := map[string]string{"record_namespace": "a", "name": "untimed"}
 	for _, tt := range []struct {
 		name   string
 		labels map[string]string
 		want   float64
 	}{
-		{"track_record_misses_total", map[string]string{"namespace": "a"}, 1},
+		{"track_record_misses_total", map[string]string{"record_namespace": "a"}, 1},
 		{"track_record_hits_total", unit, 2},
 		{"track_record_saved_seconds_total", unit, 3},
 		{"track_record_passes_total", unit, 2},
@@ -593,7 +593,7 @@ func TestMetricLabelsAreBounded(t *testing.T) {
 	for _, fam := range families {
 		for _, m := range fam.GetMetric() {
 			for _, l := range m.GetLabel() {
-				if strings.Contains(strings.ToLower(l.GetValue()), "chosen") || (l.GetName() == "namespace" && l.GetValue() != "a") {
+				if strings.Contains(strings.ToLower(l.GetValue()), "chosen") || l.GetName() == "namespace" || (l.GetName() == "record_namespace" && l.GetValue() != "a") {
 					t.Errorf("%s has %s=%q", fam.GetName(), l.GetName(), l.GetValue())
 				}
 			}
