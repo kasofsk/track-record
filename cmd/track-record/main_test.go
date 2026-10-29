@@ -1214,3 +1214,98 @@ func TestTokenCreateStdoutIsTheToken(t *testing.T) {
 		t.Errorf("revoking an unknown token: exit %d", r.code)
 	}
 }
+
+// A recorded pass says how long its command ran.
+func TestRecordSaysHowLongTheCommandRan(t *testing.T) {
+	w := newWorld(t)
+	slow := []string{"--name", "slow", "--", "sh", "-c", "sleep 0.2"}
+	if r := w.run(append([]string{"run"}, slow...)...); r.code != 0 || !strings.Contains(r.stderr, "RECORDED slow") {
+		t.Fatalf("exit %d: %s", r.code, r.stderr)
+	}
+	k := strings.SplitN(w.run(append([]string{"key"}, slow...)...).stdout, "\n", 2)[0]
+	rec, err := w.store.Record(context.Background(), "acme", k, time.Now(), time.Hour)
+	switch {
+	case err != nil:
+		t.Fatal(err)
+	case rec.DurationMs == nil:
+		t.Error("the record does not say how long the command ran")
+	case *rec.DurationMs < 200:
+		t.Errorf("the record says the command ran %d ms; it slept for 200", *rec.DurationMs)
+	}
+}
+
+// serve's metrics are on a listener of their own, and the API's does not
+// serve them.
+func TestServeMetrics(t *testing.T) {
+	w := newWorld(t)
+	cmd := w.command("serve", "--listen", "127.0.0.1:0", "--metrics-listen", "127.0.0.1:0", "--db", filepath.Join(t.TempDir(), "db"))
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stuck := time.AfterFunc(10*time.Second, func() {
+		t.Error("serve still running after 10s")
+		cmd.Process.Kill()
+	})
+	defer stuck.Stop()
+	type logLine struct{ Msg, Addr, Metrics string }
+	var listening logLine
+	lines := bufio.NewScanner(stderr)
+	for lines.Scan() {
+		var l logLine
+		if json.Unmarshal(lines.Bytes(), &l) == nil && l.Msg == "listening" {
+			listening = l
+			break
+		}
+	}
+	if listening.Metrics == "" {
+		cmd.Process.Kill()
+		cmd.Wait()
+		t.Fatalf("no listening line with a metrics address: %+v", listening)
+	}
+	go func() {
+		for lines.Scan() {
+		}
+	}()
+
+	hc := &http.Client{Timeout: 5 * time.Second}
+	get := func(url string) (int, string) {
+		t.Helper()
+		resp, err := hc.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, string(body)
+	}
+	if code, _ := get("http://" + listening.Addr + "/healthz"); code != http.StatusOK {
+		t.Errorf("/healthz: %d", code)
+	}
+	code, body := get("http://" + listening.Metrics + "/metrics")
+	for _, want := range []string{
+		`track_record_http_request_duration_seconds_count{code="200",route="GET /healthz"} 1`,
+		"go_build_info{",
+		"process_resident_memory_bytes ",
+	} {
+		if code != http.StatusOK || !strings.Contains(body, want) {
+			t.Errorf("/metrics: %d, without %q", code, want)
+		}
+	}
+	if code, _ := get("http://" + listening.Addr + "/metrics"); code != http.StatusNotFound {
+		t.Errorf("/metrics on the API's listener: %d, want 404", code)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Errorf("serve after SIGTERM: %v", err)
+	}
+}

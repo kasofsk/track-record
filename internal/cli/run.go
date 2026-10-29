@@ -159,7 +159,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	outLog, errLog := &stream{c: capture}, &stream{c: capture}
 	intr := catchInterrupts()
 	defer intr.stop()
+	start := time.Now()
 	out := intr.execute(f.argv, childEnv(k), stdin, io.MultiWriter(stdout, outLog), io.MultiWriter(stderr, errLog))
+	took := time.Since(start)
 	outLog.flush()
 	errLog.flush()
 	if out.err != nil || out.code != 0 {
@@ -186,7 +188,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case changed != "":
 		warnf(stderr, "%s passed but is not recorded: %s", f.name, changed)
 	default:
-		record(ctx, cl, f, in, logFile, capture, stderr)
+		record(ctx, cl, f, in, took, logFile, capture, stderr)
 	}
 	return 0
 }
@@ -282,8 +284,9 @@ func fetchLog(ctx context.Context, cl *client.Client, namespace string, ref *api
 	return data, nil
 }
 
-// record uploads the log, then records the pass. It only warns on failure.
-func record(ctx context.Context, cl *client.Client, f *runFlags, in key.Inputs, logFile *os.File, c *capture, stderr io.Writer) {
+// record uploads the log, then records the pass, which took as long as took
+// to run. It only warns on failure.
+func record(ctx context.Context, cl *client.Client, f *runFlags, in key.Inputs, took time.Duration, logFile *os.File, c *capture, stderr io.Writer) {
 	var ref *api.Log
 	digest := hex.EncodeToString(c.h.Sum(nil))
 	_, err := logFile.Seek(0, io.SeekStart)
@@ -305,7 +308,8 @@ func record(ctx context.Context, cl *client.Client, f *runFlags, in key.Inputs, 
 		warnf(stderr, "%s passed but is not recorded: %v", f.name, err)
 		return
 	}
-	created, err := cl.PutRecord(ctx, f.namespace, in.Key(), api.PutRecord{Statement: raw, Log: ref})
+	ms := took.Milliseconds()
+	created, err := cl.PutRecord(ctx, f.namespace, in.Key(), api.PutRecord{Statement: raw, Log: ref, DurationMs: &ms})
 	switch {
 	case err != nil:
 		warnf(stderr, "%s passed but is not recorded: %v", f.name, err)

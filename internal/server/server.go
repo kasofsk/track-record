@@ -18,6 +18,7 @@ import (
 	"github.com/kasofsk/track-record/internal/api"
 	"github.com/kasofsk/track-record/internal/statement"
 	"github.com/kasofsk/track-record/internal/store"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Config is how the server treats what it stores.
@@ -26,6 +27,7 @@ type Config struct {
 	MaxLog       int64         // bytes
 	MaxStatement int64         // bytes
 	Logger       *slog.Logger
+	Metrics      prometheus.Registerer // where the server's series are registered; nil for nowhere
 	Now          func() time.Time
 }
 
@@ -40,9 +42,10 @@ const LogGrace = time.Hour
 
 // Server is the store's HTTP handler.
 type Server struct {
-	store *store.Store
-	cfg   Config
-	mux   *http.ServeMux
+	store   *store.Store
+	cfg     Config
+	mux     *http.ServeMux
+	metrics *metrics
 }
 
 // New returns a server for st.
@@ -53,7 +56,7 @@ func New(st *store.Store, cfg Config) *Server {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	s := &Server{store: st, cfg: cfg, mux: http.NewServeMux()}
+	s := &Server{store: st, cfg: cfg, mux: http.NewServeMux(), metrics: newMetrics(cfg.Metrics)}
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -64,17 +67,20 @@ func New(st *store.Store, cfg Config) *Server {
 	return s
 }
 
-// ServeHTTP serves a request and logs it, without its token or body.
+// ServeHTTP serves a request, then logs it, without its token or body, and
+// measures it.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 	s.mux.ServeHTTP(sw, r)
+	took := time.Since(start)
 	s.cfg.Logger.Info("request",
 		"method", r.Method,
 		"route", r.Pattern,
 		"namespace", r.PathValue("namespace"),
 		"status", sw.status,
-		"duration", time.Since(start))
+		"duration", took)
+	s.metrics.request(r.Pattern, sw.status, took)
 }
 
 // Sweep deletes expired records and the logs nothing live refers to.
@@ -84,6 +90,8 @@ func (s *Server) Sweep(ctx context.Context) error {
 		return err
 	}
 	s.cfg.Logger.Info("sweep", "records", records, "logs", logs)
+	s.metrics.sweptRecords.Add(float64(records))
+	s.metrics.sweptLogs.Add(float64(logs))
 	return nil
 }
 
@@ -140,6 +148,7 @@ func (s *Server) getRecord(w http.ResponseWriter, r *http.Request, tok store.Tok
 	}
 	rec, err := s.store.Record(r.Context(), tok.Namespace, key, s.cfg.Now(), s.cfg.TTL)
 	if errors.Is(err, store.ErrNotFound) {
+		s.metrics.miss(tok.Namespace)
 		writeError(w, http.StatusNotFound, "no record")
 		return
 	}
@@ -147,6 +156,7 @@ func (s *Server) getRecord(w http.ResponseWriter, r *http.Request, tok store.Tok
 		s.internal(w, err)
 		return
 	}
+	s.metrics.hit(tok.Namespace, rec.Name, rec.DurationMs)
 	writeJSON(w, http.StatusOK, rec)
 }
 
@@ -175,7 +185,12 @@ func (s *Server) putRecord(w http.ResponseWriter, r *http.Request, tok store.Tok
 		writeError(w, http.StatusBadRequest, "log: a digest is 64 lowercase hex characters and a size is not negative")
 		return
 	}
-	rec, created, err := s.store.PutRecord(r.Context(), tok.Namespace, key, st.Subject[0].Name, body.Statement, body.Log, tok, s.cfg.Now(), s.cfg.TTL)
+	if body.DurationMs != nil && *body.DurationMs < 0 {
+		writeError(w, http.StatusBadRequest, "durationMs: a duration is not negative")
+		return
+	}
+	name := st.Subject[0].Name
+	rec, created, err := s.store.PutRecord(r.Context(), tok.Namespace, key, name, body.Statement, body.Log, body.DurationMs, tok, s.cfg.Now(), s.cfg.TTL)
 	if errors.Is(err, store.ErrNoLog) {
 		writeError(w, http.StatusBadRequest, "log: "+err.Error())
 		return
@@ -184,6 +199,7 @@ func (s *Server) putRecord(w http.ResponseWriter, r *http.Request, tok store.Tok
 		s.internal(w, err)
 		return
 	}
+	s.metrics.pass(tok.Namespace, name, body.DurationMs)
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated

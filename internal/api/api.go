@@ -41,12 +41,14 @@ type Record struct {
 	RecordedAt time.Time       `json:"recordedAt"`
 	ExpiresAt  time.Time       `json:"expiresAt"`
 	Log        *Log            `json:"log"`
+	DurationMs *int64          `json:"durationMs"` // how long the pass took to run, in milliseconds; nil if its writer did not say
 }
 
 // PutRecord is the body of a request to record a pass.
 type PutRecord struct {
-	Statement json.RawMessage `json:"statement"`
-	Log       *Log            `json:"log,omitempty"`
+	Statement  json.RawMessage `json:"statement"`
+	Log        *Log            `json:"log,omitempty"`
+	DurationMs *int64          `json:"durationMs,omitempty"` // how long the pass took to run, in milliseconds
 }
 
 // Error is the body of every error response.

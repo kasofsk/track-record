@@ -42,13 +42,14 @@ its database, in the volume `/data`, so its root can be read-only. Losing the
 database loses the tokens along with the records: every token must be minted
 again, and every pass earned again.
 
-| Flag              | Environment                  | Default                                        |
-| ----------------- | ---------------------------- | ---------------------------------------------- |
-| `--listen`        | `TRACK_RECORD_LISTEN`        | `:8080`                                        |
-| `--db`            | `TRACK_RECORD_DB`            | `track-record.db`; in the image, `/data/track-record.db` |
-| `--ttl`           | `TRACK_RECORD_TTL`           | `720h`: how long a record lives after it was last recorded or reused |
-| `--log-max`       | `TRACK_RECORD_LOG_MAX`       | `8388608` bytes                                |
-| `--statement-max` | `TRACK_RECORD_STATEMENT_MAX` | `65536` bytes                                  |
+| Flag               | Environment                   | Default                                                              |
+| ------------------ | ----------------------------- | -------------------------------------------------------------------- |
+| `--listen`         | `TRACK_RECORD_LISTEN`         | `:8080`                                                              |
+| `--metrics-listen` | `TRACK_RECORD_METRICS_LISTEN` | none: where to serve [metrics](#metrics), such as `:9090`            |
+| `--db`             | `TRACK_RECORD_DB`             | `track-record.db`; in the image, `/data/track-record.db`             |
+| `--ttl`            | `TRACK_RECORD_TTL`            | `720h`: how long a record lives after it was last recorded or reused |
+| `--log-max`        | `TRACK_RECORD_LOG_MAX`        | `8388608` bytes                                                      |
+| `--statement-max`  | `TRACK_RECORD_STATEMENT_MAX`  | `65536` bytes                                                        |
 
 ## Mint a token
 
@@ -111,6 +112,42 @@ rev-parse origin/main'` for one that compares against a ref.
 
 `track-record key [flags] -- <command>` prints the key and a summary of what it
 covers.
+
+## Metrics
+
+`serve --metrics-listen :9090` serves Prometheus metrics at `/metrics` on that
+address, and nowhere else. They name every namespace and the commands on record
+in it, which a token sees only for its own, so the API's port, which may be
+public, does not serve them.
+
+`run` records how long the command took with its pass, and the server counts:
+
+| Series                                                              | Labels              | What it counts                                          |
+| ------------------------------------------------------------------- | ------------------- | ------------------------------------------------------- |
+| `track_record_hits_total`                                           | `namespace`, `name` | lookups that found a pass on record                     |
+| `track_record_misses_total`                                         | `namespace`         | lookups that found none                                 |
+| `track_record_saved_seconds_total`                                  | `namespace`, `name` | for each hit, how long the pass found took: time saved  |
+| `track_record_passes_total`                                         | `namespace`, `name` | passes recorded, and those that found one already there |
+| `track_record_pass_seconds_total`                                   | `namespace`, `name` | how long each of those passes took                      |
+| `track_record_swept_records_total`, `track_record_swept_logs_total` |                     | what the sweeper deleted                                |
+| `track_record_http_request_duration_seconds`                        | `route`, `code`     | each request, by how long it took                       |
+
+The Go runtime's and the process's series are there too, with `go_build_info`.
+
+```promql
+sum(increase(track_record_saved_seconds_total[1d]))  # time saved in a day
+sum(increase(track_record_pass_seconds_total[1d]))   # time spent earning passes
+```
+
+- `name` is `--name`, and each name is a series of its own, so it should name
+  the command, such as `test`, and not vary from run to run.
+- Time saved is how long the pass took when it was recorded; a hit still costs
+  the key and the lookup. A pass recorded by a track-record that did not yet
+  send its duration adds nothing to it.
+- The server hears only of passes. A command that fails, or runs with no store,
+  is not counted, so time spent on CI as a whole is the CI's to measure.
+- The counters start from zero when the server does, which `rate` and
+  `increase` allow for.
 
 ## Develop
 
